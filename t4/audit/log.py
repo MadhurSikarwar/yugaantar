@@ -224,7 +224,14 @@ def _write_atomically(path: Path, data: bytes) -> None:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
-    os.replace(temporary, path)
+    for attempt in range(50):
+        try:
+            os.replace(temporary, path)
+            break
+        except PermissionError:  # Windows: another program briefly has it open.
+            if attempt == 49:
+                raise
+            time.sleep(0.01)
     _fsync_directory(path.parent)
 
 
