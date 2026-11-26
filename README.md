@@ -48,7 +48,12 @@ echo '{"op":"read","actor":"maya","asset":"brief","request_id":"r1"}' | python t
 
 # The whole 5-minute story in one command (synthetic data, temporary directories):
 python demo/run_demo.py
+
+# The web console connected to the real backend (needs Node 22+ once: cd frontend && npm ci && npm run build):
+python tools/bridge.py        # then open http://127.0.0.1:8765/#/console and choose "Connect to backend"
 ```
+
+The bridge is demo tooling for a developer machine (localhost only, synthetic data, no authentication of the actor). See `frontend/README.md`, section "Live backend".
 
 ## How to verify every claim
 

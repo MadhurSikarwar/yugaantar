@@ -6,8 +6,10 @@ import {
   type Snapshot,
 } from "../snapshot.ts";
 import { SAMPLE_NAME, sampleSnapshot } from "../lib/sample.ts";
+import { bridge } from "../lib/api.ts";
 import Charts from "./Charts.tsx";
 import Inspector, { type Inspected } from "./Inspector.tsx";
+import LivePanel from "./LivePanel.tsx";
 import NodeMap from "./NodeMap.tsx";
 import Palette, { type Command } from "./Palette.tsx";
 import "./console.css";
@@ -27,6 +29,8 @@ const go = (tab: Tab) => {
   location.hash = `#/console/${slugs[tabs.indexOf(tab)]}`;
 };
 type Row = Record<string, unknown>;
+const LIVE_NAME = "Live backend";
+const POLL_MS = 3000;
 
 const views: Record<
   Tab,
@@ -86,7 +90,7 @@ const views: Record<
   },
   Verification: {
     title: "Verification",
-    lead: "Cryptographic results as the loaded file reports them.",
+    lead: "Cryptographic results as the source reports them.",
     category: "verifications",
     columns: [
       ["id", "Evidence"],
@@ -200,6 +204,9 @@ export default function Console() {
   const [tab, setTab] = useState<Tab>(routeTab);
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [synthetic, setSynthetic] = useState(false);
+  const [live, setLive] = useState(false);
+  const [connecting, setConnecting] = useState(false);
+  const [lost, setLost] = useState(false);
   const [filename, setFilename] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -245,6 +252,49 @@ export default function Console() {
     return () => window.removeEventListener("keydown", key);
   }, []);
 
+  async function refreshLive() {
+    const version = importVersion.current;
+    const next = await bridge.snapshot();
+    if (version === importVersion.current) setSnapshot(next);
+  }
+  useEffect(() => {
+    if (!live) return;
+    let busy = false;
+    const timer = setInterval(async () => {
+      if (busy || document.hidden) return;
+      busy = true;
+      try {
+        await refreshLive();
+        setLost(false);
+      } catch {
+        setLost(true);
+      }
+      busy = false;
+    }, POLL_MS);
+    return () => clearInterval(timer);
+  }, [live]);
+  async function connectLive(fresh = false) {
+    const version = ++importVersion.current;
+    setConnecting(true);
+    setError("");
+    try {
+      const health = await bridge.health();
+      if (fresh || !health.started) await bridge.start();
+      const next = await bridge.snapshot();
+      if (version !== importVersion.current) return;
+      setSnapshot(next);
+      setSynthetic(false);
+      setLive(true);
+      setLost(false);
+      setFilename(LIVE_NAME);
+      setInspected(null);
+      resetFilters();
+      setNotice("Connected to the local backend.");
+    } catch (e) {
+      if (version === importVersion.current) setError((e as Error).message);
+    }
+    setConnecting(false);
+  }
   async function importFile(selected: File | undefined) {
     if (!selected) return;
     const version = ++importVersion.current;
@@ -256,6 +306,7 @@ export default function Console() {
       if (version !== importVersion.current) return;
       setSnapshot(parsed);
       setSynthetic(false);
+      setLive(false);
       setFilename(selected.name);
       setInspected(null);
       resetFilters();
@@ -271,6 +322,7 @@ export default function Console() {
     importVersion.current++;
     setSnapshot(sampleSnapshot());
     setSynthetic(true);
+    setLive(false);
     setFilename(SAMPLE_NAME);
     setError("");
     resetFilters();
@@ -280,17 +332,24 @@ export default function Console() {
     importVersion.current++;
     setSnapshot(null);
     setSynthetic(false);
+    setLive(false);
     setFilename("");
     setError("");
     resetFilters();
-    setNotice("Snapshot cleared from this session.");
+    setNotice(
+      live
+        ? "Disconnected from the backend."
+        : "Snapshot cleared from this session.",
+    );
   }
   const chooseFile = () => file.current?.click();
 
   const view = views[tab];
   const note = synthetic
     ? "Synthetic sample. This record is invented for demonstration."
-    : "Imported claims are not independently verified by this page.";
+    : live
+      ? "Live from the local backend. The bridge ran the verifier of the backend; this page ran no cryptography."
+      : "Imported claims are not independently verified by this page.";
   const inspect = (title: string, record: object) =>
     setInspected({ title, record, note });
   const rowTitle = (of: Tab) =>
@@ -304,18 +363,20 @@ export default function Console() {
   const showHelp = () =>
     setInspected({
       title: "About this console",
-      note: "A read-only frontend. It is not connected to the backend.",
+      note: live
+        ? "Connected to the local backend bridge (tools/bridge.py)."
+        : "Not connected. Start tools/bridge.py and choose Connect to backend for live data.",
       record: {
         source:
-          "A JSON snapshot you choose (schemaVersion 1), or the built-in synthetic sample.",
+          "The local backend bridge (live), a JSON snapshot you choose (schemaVersion 1), or the built-in synthetic sample.",
         privacy:
-          "Files are parsed in memory. Nothing is uploaded, stored or sent anywhere.",
+          "Files are parsed in memory and never uploaded. In live mode the page talks only to the bridge on this computer, with synthetic data.",
         format:
           "schemaVersion, capturedAt, devices, nodes, audit, verifications. The full contract is in frontend/README.md.",
         limits:
           "5 MB per file and 5,000 entries per collection. Unknown fields are discarded.",
         trust:
-          "States and verification outcomes are claims made by the file, not results checked here.",
+          "States and verification outcomes are claims made by the source. In live mode the bridge computes them with the verifier of the backend; this page checks nothing itself.",
         shortcuts: "Ctrl K or Command K opens the command palette.",
       },
     });
@@ -344,10 +405,21 @@ export default function Console() {
       hint: "View",
       run: () => go(name),
     })),
+    {
+      label: live ? "Refresh from the backend" : "Connect to the backend",
+      hint: "Action",
+      run: () => void connectLive(),
+    },
     { label: "Import a snapshot", hint: "Action", run: chooseFile },
     { label: "Load the synthetic sample", hint: "Action", run: loadSample },
     ...(snapshot
-      ? [{ label: "Clear the snapshot", hint: "Action", run: clearSnapshot }]
+      ? [
+          {
+            label: live ? "Disconnect from the backend" : "Clear the snapshot",
+            hint: "Action",
+            run: clearSnapshot,
+          },
+        ]
       : []),
     { label: "About this console", hint: "Help", run: showHelp },
     {
@@ -415,10 +487,17 @@ export default function Console() {
           <p>
             {snapshot
               ? "Change the search or filter, or load a snapshot that has these records."
-              : "Drop a snapshot file anywhere on this page, or look around with invented records."}
+              : "Connect to the local backend bridge, drop a snapshot file on this page, or look around with invented records."}
           </p>
           {!snapshot && (
             <div className="empty-actions">
+              <button
+                className="button button-light"
+                disabled={connecting}
+                onClick={() => void connectLive()}
+              >
+                {connecting ? "Connecting..." : "Connect to backend"}
+              </button>
               <button className="button button-light" onClick={chooseFile}>
                 Import snapshot
               </button>
@@ -512,7 +591,11 @@ export default function Console() {
         <div className="sidebar-foot">
           <button onClick={showHelp}>About this console</button>
           <a href="#/">Landing page</a>
-          <p>Read-only. Not connected to a backend.</p>
+          <p>
+            {live
+              ? "Connected to the local backend bridge."
+              : "Not connected to a backend."}
+          </p>
         </div>
       </aside>
 
@@ -530,7 +613,16 @@ export default function Console() {
           </div>
           {snapshot && (
             <button className="button button-small" onClick={clearSnapshot}>
-              Clear
+              {live ? "Disconnect" : "Clear"}
+            </button>
+          )}
+          {!live && (
+            <button
+              className="button button-small"
+              disabled={connecting}
+              onClick={() => void connectLive()}
+            >
+              {connecting ? "Connecting..." : "Connect to backend"}
             </button>
           )}
           <button
@@ -550,10 +642,22 @@ export default function Console() {
           />
         </header>
         {snapshot && (
-          <p className={synthetic ? "banner banner-synthetic" : "banner"}>
+          <p
+            className={
+              synthetic
+                ? "banner banner-synthetic"
+                : live
+                  ? "banner banner-live"
+                  : "banner"
+            }
+          >
             {synthetic
               ? "Synthetic sample. Every record is invented for demonstration; nothing here came from a running service."
-              : "Imported data, not live. These records have not been independently verified in this browser."}
+              : live
+                ? lost
+                  ? "Connection to the backend bridge lost. Showing the last data it sent."
+                  : "Live from the local backend bridge, using synthetic data. The audit chains were checked by the verifier of the backend on the bridge; this page runs no cryptography."
+                : "Imported data, not live. These records have not been independently verified in this browser."}
           </p>
         )}
         <main id="console-content" tabIndex={-1} className="main">
@@ -593,6 +697,13 @@ export default function Console() {
               </ul>
               {snapshot && snapshot.audit.length > 0 && (
                 <Charts key={filename} records={snapshot.audit} />
+              )}
+              {live && snapshot && (
+                <LivePanel
+                  snapshot={snapshot}
+                  refresh={refreshLive}
+                  reset={() => connectLive(true)}
+                />
               )}
               <section className="panel" aria-labelledby="recent-title">
                 <div className="panel-head">

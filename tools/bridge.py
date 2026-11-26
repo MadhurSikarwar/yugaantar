@@ -1,0 +1,593 @@
+#!/usr/bin/env python3
+"""Local bridge between the frontend and the real backend (demo tool, not the judged adapter).
+
+    python tools/bridge.py [--port 8765] [--static frontend/dist] [--workspace DIR] [--no-start]
+
+A browser cannot start a Python process, so this small HTTP server sits next to it and does what
+``demo/run_demo.py`` does, on request:
+
+  * every adapter call runs ``track4_service.py`` as a NEW process with a JSON request on stdin,
+    exactly as the judges run it (ML-KEM-768 protected reads, HMAC proofs, the signed audit log);
+  * a node layer (authority, three nodes, three enrolled devices) is driven through the real
+    ``t4.node`` modules on a simulated clock, so key rotation, revocation and a stale node can be
+    shown in a minute instead of waiting out the freshness bound;
+  * ``GET /api/snapshot`` turns what those modules and logs hold into the frontend's snapshot
+    format. The audit chains are checked here with ``t4.audit.verify``; the browser still runs no
+    cryptography of its own.
+
+Endpoints (JSON only):
+
+    GET  /api/health      {"ok": true, "started": bool}
+    POST /api/start       build a fresh workspace (synthetic data, temporary directories)
+    GET  /api/snapshot    the frontend snapshot, schemaVersion 1
+    POST /api/adapter     one adapter request: setup, read, revoke, audit, protected_read
+    POST /api/action      one node-layer action: request, deliver, revoke_device, set_offline,
+                          advance, rotate, enroll, protected_check
+
+Safety, stated plainly:
+  * It binds to 127.0.0.1 only and refuses a request whose Host header is not the address it
+    listens on (DNS rebinding) or whose Origin is another site. It sends no CORS headers, so a web
+    page on another origin cannot read its answers.
+  * Request bodies are capped at 1 MiB and must be JSON. Adapter errors return a fixed label,
+    never stderr, request data, keys or contents.
+  * It is NOT an authentication layer. The adapter decides permission from the actor it is given
+    (docs/threat-model.md), and so does this bridge: anyone who can reach this port can act as any
+    actor. Run it on a developer machine, never on a shared host or a public interface.
+  * Everything lives in a temporary directory outside the repository and holds synthetic data.
+    This file is demo tooling and is not part of the judged runtime (check_all.py does not scan it).
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import hashlib
+import hmac
+import json
+import mimetypes
+import os
+import re
+import secrets
+import shutil
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+MAX_BODY = 1024 * 1024
+MAX_AUDIT_ROWS = 5000
+ADAPTER_OPS = frozenset({"setup", "read", "revoke", "audit", "protected_read"})
+NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
+MAX_ADVANCE_SECONDS = 24 * 3600
+
+OWNERS = {"plan": "maya", "budget": "noor", "notes": "eve"}
+CONTENTS = {"plan": "synthetic plan", "budget": "synthetic budget", "notes": "synthetic notes"}
+DEVICES = (("maya-phone", "maya"), ("noor-tablet", "noor"), ("eve-laptop", "eve"))
+NODES = ("node-a", "node-b", "node-c")
+SIGNATURE_UNCHECKED = {"NODE-STALE-LIST", "NODE-CLOCK-ROLLBACK", "NODE-UNKNOWN-DEVICE",
+                       "NODE-KEY-INACTIVE", "NODE-BAD-SIGNATURE"}
+
+
+class BridgeError(Exception):
+    """An error whose text is a fixed label that is safe to show a client."""
+
+    def __init__(self, label: str, status: int = 400) -> None:
+        super().__init__(label)
+        self.label = label
+        self.status = status
+
+
+def iso(moment: float) -> str:
+    return datetime.fromtimestamp(moment, timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+class Workspace:
+    """One synthetic world: an adapter state folder, an authority, three nodes and some devices."""
+
+    def __init__(self, base: Path | None = None, freshness: float = 60.0, skew: float = 2.0) -> None:
+        self._own_base = base is None
+        if base is None:
+            self.base = Path(tempfile.mkdtemp(prefix="t4-bridge-"))
+        else:
+            self.base = Path(base)
+            self.base.mkdir(parents=True, exist_ok=True)
+            # start() clears this folder, so never adopt one that already holds somebody's files.
+            if any(self.base.iterdir()):
+                raise BridgeError("workspace_must_be_an_empty_folder")
+        self.freshness, self.skew = freshness, skew
+        self.check_count = 0
+        self.lock = threading.RLock()
+        self.started = False
+        self.offset = 0.0
+        self.offline: set[str] = set()
+        self.checks: list[dict] = []
+        self.started_at = time.time()
+
+    # -- lifecycle ----------------------------------------------------------
+
+    def close(self) -> None:
+        if self._own_base:
+            shutil.rmtree(self.base, ignore_errors=True)
+
+    def now(self) -> float:
+        return time.time() + self.offset
+
+    def start(self) -> None:
+        from t4.node.authority import Authority
+        from t4.node.common import load_signer, open_log
+        from t4.node.device import Device
+        from t4.node.freshness import Node
+
+        with self.lock:
+            self.started = False
+            for child in self.base.iterdir():
+                shutil.rmtree(child, ignore_errors=True) if child.is_dir() else child.unlink()
+            self.offset, self.offline, self.checks = 0.0, set(), []
+            self.started_at = time.time()
+            self.state = self.base / "adapter-state"
+            self.state.mkdir(mode=0o700)
+            os.chmod(self.state, 0o700)
+            logs = self.base / "logs"
+            self.signer = load_signer()
+            self.authority = Authority.create(self.base / "authority", self.signer, open_log(logs / "authority"),
+                                              freshness=self.freshness, skew=self.skew)
+            self.nodes = {nid: Node.provision(self.base / nid, self.signer, open_log(logs / nid), node_id=nid,
+                                              authority_pk=self.authority.public_key, owners=OWNERS,
+                                              contents=CONTENTS, freshness=self.freshness, skew=self.skew)
+                          for nid in NODES}
+            self.devices = {}
+            for device_id, owner in DEVICES:
+                device = Device.create(self.base / f"dev-{device_id}", self.signer, device_id, owner)
+                device.enroll(self.authority, self.now())
+                self.devices[device_id] = device
+            self.contents = dict(CONTENTS)
+            reply = self.adapter({"op": "setup", "owners": OWNERS, "contents": CONTENTS, "disabled": [],
+                                  "key_material": secrets.token_hex(16)})
+            if reply != {"ready": True}:
+                raise BridgeError("setup_failed", 500)
+            self.deliver()
+            self.started = True
+
+    def need_started(self) -> None:
+        if not self.started:
+            raise BridgeError("not_started", 409)
+
+    # -- the judged adapter -------------------------------------------------
+
+    def adapter(self, request: dict) -> dict:
+        if not isinstance(request, dict) or request.get("op") not in ADAPTER_OPS:
+            raise BridgeError("unsupported_operation")
+        env = dict(os.environ)
+        for name in ("TRACK4_STATE_DIR", "TMPDIR", "TEMP", "TMP"):
+            env[name] = str(self.state)
+        try:
+            proc = subprocess.run([sys.executable, "-B", str(ROOT / "track4_service.py")],
+                                  input=json.dumps(request).encode("utf-8"), cwd=ROOT, env=env,
+                                  capture_output=True, timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            raise BridgeError("adapter_unavailable", 502) from None
+        if proc.returncode != 0:
+            raise BridgeError("adapter_refused_request", 422)
+        try:
+            return json.loads(proc.stdout)
+        except ValueError:
+            raise BridgeError("adapter_bad_reply", 502) from None
+
+    def call_adapter(self, request: dict) -> dict:
+        with self.lock:
+            self.need_started()
+            return self.adapter(request)
+
+    # -- node-layer actions -------------------------------------------------
+
+    def act(self, body: dict) -> dict:
+        name = body.get("name")
+        handlers = {
+            "request": self.signed_request, "deliver": self.deliver_action,
+            "revoke_device": self.revoke_device, "set_offline": self.set_offline,
+            "advance": self.advance, "rotate": self.rotate, "enroll": self.enroll,
+            "protected_check": self.protected_check,
+        }
+        if name not in handlers:
+            raise BridgeError("unknown_action")
+        with self.lock:
+            self.need_started()
+            try:
+                return handlers[name](body)
+            except BridgeError:
+                raise
+            except Exception as error:  # noqa: BLE001 - node errors carry fixed text; anything else is generic
+                from t4.node.common import NodeError
+
+                raise BridgeError(str(error) if isinstance(error, NodeError) else "action_failed") from None
+
+    def _device(self, value: object):
+        if not isinstance(value, str) or value not in self.devices:
+            raise BridgeError("unknown_device")
+        return self.devices[value]
+
+    def _node(self, value: object):
+        if not isinstance(value, str) or value not in self.nodes:
+            raise BridgeError("unknown_node")
+        return value, self.nodes[value]
+
+    def signed_request(self, body: dict) -> dict:
+        from t4.node.common import open_log
+        from t4.node.request import respond
+
+        device = self._device(body.get("device_id"))
+        node_id, node = self._node(body.get("node_id"))
+        asset = body.get("asset")
+        if not isinstance(asset, str) or not asset or len(asset) > 200:
+            raise BridgeError("bad_asset")
+        now = self.now()
+        signed = device.make_request(node_id, asset, now)
+        if body.get("tamper") is True:
+            signed["body"]["actor"] = "noor" if signed["body"]["actor"] != "noor" else "maya"
+        reply = respond(node, signed, now)
+        rule = ""
+        for entry in reversed(open_log(self.base / "logs" / node_id).entries()):
+            if entry["action"] == "read" and entry["decision"] in ("allow", "deny"):
+                rule = entry["rule"]
+                break
+        return {"decision": reply["decision"], "rule": rule, "node_id": node_id}
+
+    def deliver(self, only: list[str] | None = None) -> dict:
+        now = self.now()
+        signed = self.authority.issue_list(now)
+        accepted = {}
+        for node_id, node in self.nodes.items():
+            if only is not None and node_id not in only:
+                continue
+            if node_id in self.offline:
+                accepted[node_id] = False
+                continue
+            accepted[node_id] = node.accept_list(signed, now)
+        return {"accepted": accepted}
+
+    def deliver_action(self, body: dict) -> dict:
+        only = body.get("nodes")
+        if only is not None:
+            if not isinstance(only, list) or not all(isinstance(n, str) and n in self.nodes for n in only):
+                raise BridgeError("unknown_node")
+        return self.deliver(only)
+
+    def revoke_device(self, body: dict) -> dict:
+        self._device(body.get("device_id"))
+        at = self.authority.revoke_device(body["device_id"], self.now())
+        return {"revoked": True, "effective_at": iso(at)}
+
+    def set_offline(self, body: dict) -> dict:
+        node_id, _ = self._node(body.get("node_id"))
+        if not isinstance(body.get("offline"), bool):
+            raise BridgeError("bad_value")
+        (self.offline.add if body["offline"] else self.offline.discard)(node_id)
+        return {"node_id": node_id, "offline": node_id in self.offline}
+
+    def advance(self, body: dict) -> dict:
+        seconds = body.get("seconds")
+        if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or not 0 < seconds <= MAX_ADVANCE_SECONDS:
+            raise BridgeError("bad_seconds")
+        self.offset += float(seconds)
+        return {"clock": iso(self.now())}
+
+    def rotate(self, body: dict) -> dict:
+        device = self._device(body.get("device_id"))
+        now = self.now()
+        activate = device.rotate(self.authority, now, now + self.freshness + self.skew + 5)
+        return {"activates_at": iso(activate)}
+
+    def enroll(self, body: dict) -> dict:
+        from t4.node.device import Device
+
+        device_id, owner = body.get("device_id"), body.get("owner")
+        if not (isinstance(device_id, str) and NAME.match(device_id) and isinstance(owner, str) and NAME.match(owner)):
+            raise BridgeError("bad_name")
+        if device_id in self.devices:
+            raise BridgeError("device_exists")
+        device = Device.create(self.base / f"dev-{device_id}", self.signer, device_id, owner)
+        device.enroll(self.authority, self.now())
+        self.devices[device_id] = device
+        return {"enrolled": device_id}
+
+    def protected_check(self, body: dict) -> dict:
+        """Ask the adapter for a protected read and verify its proof like an independent client."""
+        from pqcrypto.kem import ml_kem_768
+
+        actor, asset = body.get("actor"), body.get("asset")
+        if not (isinstance(actor, str) and isinstance(asset, str) and asset in self.contents):
+            raise BridgeError("bad_request")
+        public_key, secret_key = ml_kem_768.generate_keypair()
+        challenge = secrets.token_hex(8)
+        reply = self.adapter({"op": "protected_read", "actor": actor, "asset": asset, "challenge": challenge,
+                              "public_key": base64.b64encode(public_key).decode("ascii")})
+        self.check_count += 1
+        number = self.check_count
+        if reply.get("decision") == "deny" or "ciphertext" not in reply:
+            result = {"id": f"protected-read-{number}", "kind": "protected-read", "outcome": "not-checked",
+                      "detail": f"{actor} asked for {asset}: the adapter denied the request, so there is no proof to check."}
+        else:
+            shared = ml_kem_768.decrypt(secret_key, base64.b64decode(reply["ciphertext"]))
+            expected = hmac.new(shared, (challenge + self.contents[asset]).encode("utf-8"), hashlib.sha256).hexdigest()
+            good = hmac.compare_digest(expected, str(reply.get("proof", "")))
+            result = {"id": f"protected-read-{number}", "kind": "protected-read",
+                      "outcome": "valid" if good else "invalid",
+                      "detail": f"{actor} read {asset}: the client decapsulated the ML-KEM-768 secret and "
+                                f"{'matched' if good else 'did not match'} the HMAC-SHA256 proof."}
+        self.checks.append(result)
+        del self.checks[:-200]
+        return {"outcome": result["outcome"]}
+
+    # -- snapshot -----------------------------------------------------------
+
+    def snapshot(self) -> dict:
+        from t4.audit.log import AuditLog
+        from t4.audit.verify import verify_log
+        from t4.node.freshness import RECORD
+        from t4.node.common import require_record
+        from t4.store import prepare_state_dir
+
+        with self.lock:
+            self.need_started()
+            now = self.now()
+            authority = self.authority._record()
+            devices = []
+            for device_id, device in sorted(authority["devices"].items()):
+                keys = device["keys"]
+                usable = [key for key in keys if key["activate_at"] <= now] or keys
+                revoked = device_id in authority["revoked_devices"] or device["owner"] in authority["revoked_actors"]
+                devices.append({"id": device_id, "owner": device["owner"],
+                                "keyVersion": max(key["version"] for key in usable),
+                                "state": "revoked" if revoked else "active"})
+
+            nodes = []
+            for node_id, node in self.nodes.items():
+                with node.store.locked() as txn:
+                    record = require_record(txn.get(RECORD), "node")
+                listed = record["list"]
+                if listed is None:
+                    state, version, ids, updated = "stale", 0, [], self.started_at
+                else:
+                    age = now - listed["issued_at"]
+                    state = "stale" if age >= record["T"] else "current"
+                    version, ids, updated = listed["seq"], sorted(listed["devices"]), listed["issued_at"]
+                if node_id in self.offline:
+                    state = "offline"
+                nodes.append({"id": node_id, "state": state, "listVersion": int(version),
+                              "deviceIds": ids, "lastUpdated": iso(updated)})
+
+            adapter_logs = Path(prepare_state_dir(self.state)) / "audit"
+            sources = [("adapter", adapter_logs, False)]
+            sources += [(f"authority", self.base / "logs" / "authority", False)]
+            sources += [(node_id, self.base / "logs" / node_id, True) for node_id in NODES]
+
+            audit, verifications = [], []
+            for name, directory, is_node in sources:
+                try:
+                    entries = AuditLog(directory, None).entries()
+                except Exception:  # noqa: BLE001 - a damaged log is reported below, never raised here
+                    entries = None
+                if name != "authority" and entries is not None:
+                    for entry in entries:
+                        if entry["decision"] in ("allow", "deny") and entry["action"] in ("read", "protected_read"):
+                            audit.append({"requestId": entry["request_id"], "timestamp": entry["ts"],
+                                          "actor": entry["actor"] or "(none)",
+                                          "action": f"{entry['action']} @ {name}" if is_node else entry["action"],
+                                          "asset": entry["target"] or "(none)",
+                                          "decision": entry["decision"], "rule": entry["rule"]})
+                report = verify_log(directory)
+                if report.ok:
+                    detail = (f"{report.entries} entries, hash chain intact. The signing key was read from the "
+                              f"log folder, not pinned.")
+                    verifications.append({"id": f"chain-{name}", "kind": "audit-chain", "outcome": "valid",
+                                          "detail": f"{name}: {detail}"})
+                    verifications.append({"id": f"checkpoint-{name}", "kind": "checkpoint",
+                                          "outcome": "valid" if report.checkpoints else "not-checked",
+                                          "detail": f"{name}: {report.checkpoints} signed ML-DSA-65 checkpoints, "
+                                                    f"covering entries up to {report.covered_seq}."})
+                else:
+                    first = (report.errors[0] if report.errors else "verification failed")[:300]
+                    verifications.append({"id": f"chain-{name}", "kind": "audit-chain", "outcome": "invalid",
+                                          "detail": f"{name}: {first}"})
+                    verifications.append({"id": f"checkpoint-{name}", "kind": "checkpoint", "outcome": "invalid",
+                                          "detail": f"{name}: checkpoints not trusted because the log failed."})
+                if is_node and entries is not None:
+                    signed = [e for e in entries if e["action"] == "read" and e["decision"] in ("allow", "deny")]
+                    bad = sum(1 for e in signed if e["rule"] == "NODE-BAD-SIGNATURE")
+                    checked = sum(1 for e in signed if e["rule"] not in SIGNATURE_UNCHECKED)
+                    if bad:
+                        outcome, detail = "invalid", f"{bad} of {len(signed)} signed requests failed signature verification."
+                    elif checked:
+                        outcome, detail = "valid", f"{checked} of {len(signed)} signed requests verified against the enrolled key."
+                    else:
+                        outcome, detail = "not-checked", "No request reached the signature check on this node yet."
+                    verifications.append({"id": f"signatures-{name}", "kind": "device-signature",
+                                          "outcome": outcome, "detail": f"{name}: {detail}"})
+            verifications.extend(self.checks)
+            audit.sort(key=lambda row: row["timestamp"])
+            return {"schemaVersion": 1, "capturedAt": iso(time.time()), "devices": devices, "nodes": nodes,
+                    "audit": audit[-MAX_AUDIT_ROWS:], "verifications": verifications[:MAX_AUDIT_ROWS],
+                    "clock": iso(now), "clockOffsetSeconds": round(self.offset, 3)}
+
+
+# ---------------------------------------------------------------- HTTP ------
+
+CSP = ("default-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; "
+       "connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+
+
+def make_handler(workspace: Workspace, static: Path | None, allowed_hosts: set[str]):
+    class Handler(BaseHTTPRequestHandler):
+        server_version = "t4-bridge"
+        sys_version = ""
+
+        def log_message(self, *_args) -> None:  # request lines can carry identifiers: stay quiet
+            return
+
+        # -- helpers
+        def send_bytes(self, status: int, data: bytes, content_type: str, extra: dict | None = None) -> None:
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Content-Security-Policy", CSP)
+            self.send_header("Referrer-Policy", "no-referrer")
+            for key, value in (extra or {}).items():
+                self.send_header(key, value)
+            self.end_headers()
+            self.wfile.write(data)
+
+        def send_json(self, status: int, value: object) -> None:
+            self.send_bytes(status, json.dumps(value, allow_nan=False).encode("utf-8"), "application/json")
+
+        def trusted(self) -> bool:
+            if self.headers.get("Host", "").lower() not in allowed_hosts:
+                return False
+            origin = self.headers.get("Origin")
+            return origin is None or origin.lower() in {f"http://{h}" for h in allowed_hosts}
+
+        def take_body(self) -> BridgeError | bytes:
+            """Read the request body before anything is answered.
+
+            Answering without reading it makes the OS reset the connection on close, so a client
+            sometimes sees a network error instead of our 4xx. A body over the cap is read and
+            thrown away (up to a limit) for the same reason, then the connection is closed.
+            """
+            try:
+                length = int(self.headers.get("Content-Length", ""))
+            except ValueError:
+                length = -1
+            if length < 0:
+                self.close_connection = True
+                return BridgeError("length_required", 411)
+            if length > MAX_BODY:
+                remaining = min(length, 8 * MAX_BODY)
+                while remaining > 0:
+                    chunk = self.rfile.read(min(65536, remaining))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+                self.close_connection = True
+                return BridgeError("body_too_large", 413)
+            return self.rfile.read(length)
+
+        def read_json(self, data: bytes) -> dict:
+            if self.headers.get("Content-Type", "").split(";")[0].strip().lower() != "application/json":
+                raise BridgeError("content_type_must_be_json", 415)
+            try:
+                value = json.loads(data.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError, RecursionError):
+                raise BridgeError("body_is_not_json") from None
+            if not isinstance(value, dict):
+                raise BridgeError("body_must_be_an_object")
+            return value
+
+        def guarded(self, work) -> None:
+            if not self.trusted():
+                self.send_json(403, {"error": "untrusted_origin"})
+                return
+            try:
+                self.send_json(200, work())
+            except BridgeError as error:
+                self.send_json(error.status, {"error": error.label})
+            except Exception:  # noqa: BLE001 - never leak details
+                self.send_json(500, {"error": "internal_error"})
+
+        # -- routes
+        def do_GET(self) -> None:  # noqa: N802
+            path = self.path.split("?", 1)[0]
+            if path == "/api/health":
+                self.guarded(lambda: {"ok": True, "started": workspace.started})
+            elif path == "/api/snapshot":
+                self.guarded(workspace.snapshot)
+            elif path.startswith("/api/"):
+                self.send_json(404, {"error": "not_found"})
+            else:
+                self.serve_static(path)
+
+        def do_POST(self) -> None:  # noqa: N802
+            path = self.path.split("?", 1)[0]
+            body = self.take_body()
+
+            def need() -> dict:
+                if isinstance(body, BridgeError):
+                    raise body
+                return self.read_json(body)
+
+            routes = {
+                "/api/start": lambda: (need(), workspace.start(), {"started": True})[2],
+                "/api/adapter": lambda: workspace.call_adapter(need()),
+                "/api/action": lambda: workspace.act(need()),
+            }
+            if path not in routes:
+                self.send_json(404, {"error": "not_found"})
+                return
+            self.guarded(routes[path])
+
+        def serve_static(self, path: str) -> None:
+            if static is None or not self.trusted():
+                self.send_json(404, {"error": "not_found"})
+                return
+            relative = path.lstrip("/") or "index.html"
+            target = (static / relative).resolve()
+            try:
+                target.relative_to(static.resolve())
+            except ValueError:
+                self.send_json(404, {"error": "not_found"})
+                return
+            if not target.is_file():
+                target = static / "index.html"  # single-page app: the console uses #/ routes
+                if not target.is_file():
+                    self.send_json(404, {"error": "not_found"})
+                    return
+            kind = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+            if kind.startswith("text/") or kind in ("application/javascript", "application/json"):
+                kind += "; charset=utf-8"
+            self.send_bytes(200, target.read_bytes(), kind)
+
+    return Handler
+
+
+def serve(port: int, static: Path | None, base: Path | None, start: bool) -> int:
+    workspace = Workspace(base)
+    server = ThreadingHTTPServer(("127.0.0.1", port), make_handler(
+        workspace, static, {f"127.0.0.1:{port}", f"localhost:{port}"}))
+    try:
+        if start:
+            print("building the synthetic workspace ...", flush=True)
+            workspace.start()
+        print(f"bridge ready: http://127.0.0.1:{server.server_address[1]}/  (Ctrl C stops it)", flush=True)
+        if static is None:
+            print("no built frontend found: use the Vite dev server, which proxies /api here", flush=True)
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+        workspace.close()
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Serve the frontend and connect it to the real backend.")
+    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--static", default=str(ROOT / "frontend" / "dist"), help="built frontend folder")
+    parser.add_argument("--workspace", help="keep the synthetic world here (default: a temporary folder)")
+    parser.add_argument("--no-start", action="store_true", help="wait for POST /api/start")
+    args = parser.parse_args(argv)
+    static = Path(args.static)
+    return serve(args.port, static if static.is_dir() else None,
+                 Path(args.workspace) if args.workspace else None, not args.no_start)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

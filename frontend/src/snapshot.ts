@@ -30,6 +30,8 @@ export interface Verification {
 export interface Snapshot {
   schemaVersion: 1;
   capturedAt: string;
+  /** Set only by the live bridge: the simulated clock the node layer is using. */
+  clock?: string;
   devices: Device[];
   nodes: NodeRecord[];
   audit: AuditRecord[];
@@ -102,6 +104,7 @@ export function parseSnapshot(text: string): Snapshot {
   return {
     schemaVersion: 1,
     capturedAt: date(input.capturedAt, "capturedAt"),
+    ...(input.clock === undefined ? {} : { clock: date(input.clock, "clock") }),
     devices: unique(
       rows(input.devices, "devices", (d) => ({
         id: str(d.id, "id"),
