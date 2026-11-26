@@ -1,7 +1,7 @@
 """Official adapter entry point: one JSON request per process.
 
 Derived from the toolkit's starter adapter (attribution is in the README). The
-one change the PRD allows (M-A5): stdin is read as bytes with a size cap and
+one change made to the starter: stdin is read as bytes with a size cap and
 decoded as strict UTF-8, so the proof bytes never depend on the system locale.
 
 Contract: read one JSON object from stdin, write one JSON object to stdout,

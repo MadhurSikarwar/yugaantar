@@ -1,4 +1,4 @@
-"""Strict input validation (owner: c1; PRD M-A5).
+"""Strict input validation.
 
 What it does
     Turns raw stdin bytes into one small, typed request object, or raises

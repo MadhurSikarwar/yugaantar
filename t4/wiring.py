@@ -1,16 +1,16 @@
-"""Builds the real dependencies for one process (owner: c1).
+"""Builds the real dependencies for one process.
 
 What it does
     ``build_default_dependencies`` connects the service to the real state store
-    and, lazily, to the modules owned by c2: ``t4.audit.log`` (the signed,
+    and, lazily, to the modules: ``t4.audit.log`` (the signed,
     hash-chained audit log) and ``t4.crypto.kem`` / ``t4.crypto.proof``.
 
 The audit signer
     The log's ML-DSA key pair belongs to the audit log: ``load_or_create_signer``
-    (c2) creates it on first use inside the audit directory and ``AuditLog``
+    creates it on first use inside the audit directory and ``AuditLog``
     signs checkpoints with it. We call it while holding the state lock (lock
     order: state first, then audit), so two processes cannot create two keys.
-    Honest limit (PRD 4.1): a key stored next to the log cannot protect against
+    Honest limit : a key stored next to the log cannot protect against
     someone who can rewrite the whole directory; the operator pins the public key
     and the head hash elsewhere (``python -m t4.audit.cli head --out``).
 
