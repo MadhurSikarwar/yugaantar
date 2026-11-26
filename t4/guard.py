@@ -1,4 +1,4 @@
-"""Self-defence: count suspicious events and raise bounded alerts (owner: c1; PRD S-A9, M-A12).
+"""Self-defence: count suspicious events and raise bounded alerts.
 
 What it does
     Watches four kinds of events and turns them into ``Alert`` objects that the
@@ -47,12 +47,12 @@ OTHER_BUCKET = "(other)"
 
 @dataclass(frozen=True)
 class Alert:
-    """One alert for the audit log (PRD M-A12).
+    """One alert for the audit log.
 
     ``entries`` are the audit sequence numbers and ``request_ids`` the request IDs
     that triggered it, so an operator can jump straight to the evidence.
     ``detail`` values are plain strings, ints or bools.
-    """
+"""
 
     rule: str
     explanation: str

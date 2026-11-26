@@ -1,4 +1,4 @@
-"""Evaluation metrics for the detector (M-C9).
+"""Evaluation metrics for the detector.
 
 What it does
     Compares predicted labels with ground-truth labels and reports:
@@ -109,7 +109,7 @@ def false_alerts(truth: Mapping[str, str], alerts: Iterable[Alert]) -> dict:
 
 def evaluate(events: Sequence[Event], predicted: Mapping[str, str],
              truth: Mapping[str, str], alerts: Iterable[Alert]) -> dict:
-    """All M-C9 metrics in one report."""
+    """All metrics in one report."""
     alerts = list(alerts)
     return {
         "classification": classification_report(predicted, truth),

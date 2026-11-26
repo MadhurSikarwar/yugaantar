@@ -1,6 +1,6 @@
-"""Black-box attacks against our own adapter (PRD section 8).
+"""Black-box attacks against our own adapter.
 
-    python tools/selfattack.py --entry track4_service.py [--items 1,2,4] [--report docs/selfattack-report.md]
+    python tools/selfattack.py --entry track4_service.py [--items 1,2,4] [--report <file>]
 
 What it does: starts the adapter as the judges do (a new process per request, a
 fresh temporary state directory per scenario), sends hostile and ordinary requests,
@@ -337,13 +337,13 @@ class Suite:
         self.identifier_flood()
 
     def identifier_flood(self, count: int = 20) -> None:
-        """Long identifiers must cost a small, fixed amount of state (c1 review finding 1).
+        """Long identifiers must cost a small, fixed amount of state.
 
         Before the fix one such read added about 24 KB, so a few thousand of them
         pushed the state past its load limit and disabled every call, including
         ``revoke``. Measured through the adapter, so it holds however the service
         keys its records. The audit log is excluded: it is meant to grow.
-        """
+"""
         filler = "\x01" * 4090  # one byte each on input, six once escaped as JSON
         limit = 1024  # bytes of state allowed per request
 
@@ -467,7 +467,7 @@ class Suite:
             shutil.rmtree(s.state)
             shutil.copytree(snapshot, s.state)
             self.note("INFO", "full state rollback",
-                      "access returned, as documented in PRD 4.1" if s.read().allowed else "rollback was refused")
+                      "access returned, a documented limit" if s.read().allowed else "rollback was refused")
 
     # ---- item 5: tampered audit log ---------------------------------------------
 
@@ -519,10 +519,10 @@ class Suite:
                            AuditLog(folder, None).verify().ok, "high", "chain broke")
         if not self.has("t4/node/cli.py"):
             return self.note("SKIP", "node replay, wrong node, stale or forged list",
-                             "needs the node layer commands (c3)")
+                             "needs the node layer commands")
         self.node_attacks()
 
-    # ---- node layer, rotation and backup (c3's commands) -------------------------
+    # ---- node layer, rotation and backup  -------------------------
 
     def has(self, relative: str) -> bool:
         return (self.entry.parent / relative).is_file()
@@ -594,7 +594,7 @@ class Suite:
 
     def item_9(self) -> None:
         if not (self.has("t4/rotation.py") and self.has("t4/node/cli.py")):
-            return self.note("SKIP", "rotation kill-points", "needs the rotation command (c3)")
+            return self.note("SKIP", "rotation kill-points", "needs the rotation command")
         child = (
             "import os, sys, time; sys.path.insert(0, '.')\n"
             "from t4.node.cli import authority_at\n"
@@ -636,7 +636,7 @@ class Suite:
 
     def item_10(self) -> None:
         if not (self.has("t4/backup.py") and self.has("t4/cli.py")):
-            return self.note("SKIP", "corrupted backup", "needs the backup commands (c3)")
+            return self.note("SKIP", "corrupted backup", "needs the backup commands")
         with NodeWorld(self, vault=True) as w:
             vault = ("--vault-keys", w.keys, "--vault-backups", w.backups, "--kind", "authority")
 
@@ -890,7 +890,7 @@ def render(results: list[Result], entry: str) -> str:
     counts = {status: sum(r.status == status for r in results) for status in ("PASS", "FAIL", "SKIP", "INFO")}
     by_severity = ", ".join(f"{level} {sum(r.severity == level for r in results)}" for level in SEVERITIES)
     lines = [
-        "# Self red-team report", "",
+        "# Self-attack report", "",
         f"Target: `{entry}` (local only). Python {sys.version.split()[0]} on {sys.platform}.", "",
         f"Result: {counts['PASS']} passed, {counts['FAIL']} failed, {counts['SKIP']} skipped, "
         f"{counts['INFO']} informational. Failures by severity: {by_severity}.", "",

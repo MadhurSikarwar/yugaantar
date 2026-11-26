@@ -1,4 +1,4 @@
-"""State directory policy (c3 and c4 found that `setup` failed on Linux in a 0755 folder).
+"""State directory policy (`setup` must work on Linux in a 0755 folder).
 
 The decision table is a pure function, so it is tested on every OS. The POSIX tests apply
 the policy to real folders; they are skipped on Windows and must run on Linux.
@@ -38,7 +38,7 @@ def classify(mode, owner=ME, me=ME, real=True, sub=True):
     ("mode", "owner", "me", "expected"),
     [
         (0o700, ME, ME, DirAction.USE),
-        (0o755, ME, ME, DirAction.TIGHTEN),  # the case c3 and c4 hit: mkdir with the default umask
+        (0o755, ME, ME, DirAction.TIGHTEN),  # mkdir with the default umask
         (0o750, ME, ME, DirAction.TIGHTEN),
         (0o705, ME, ME, DirAction.TIGHTEN),
         (0o775, ME, ME, DirAction.TIGHTEN),  # group-writable but not world-writable: ours and loose

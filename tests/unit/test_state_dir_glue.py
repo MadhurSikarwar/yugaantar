@@ -1,6 +1,6 @@
 """The POSIX glue of the state-directory policy, exercised through a simulated POSIX layer.
 
-c1 develops on Windows, where ``os.getuid``, ``fchmod`` and ``O_NOFOLLOW`` do not exist.
+On Windows, ``os.getuid``, ``fchmod`` and ``O_NOFOLLOW`` do not exist.
 These tests replace the ``os`` calls used by ``t4.store._claim_posix`` with a small fake
 file table so the exact call sequence (open without following symlinks, fstat, fchmod only
 on our own private-able folders, never on shared ones) is checked on every OS. They do

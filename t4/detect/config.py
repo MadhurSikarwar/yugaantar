@@ -3,14 +3,14 @@
 What it does
     Holds the tunable values the rules use, with the defaults documented below.
     The defaults encode the service context described in the toolkit's
-    ``practice/README.md`` (which roles may reach which services, who may
+    the toolkit's practice notes (which roles may reach which services, who may
     approve changes). Nothing here is learned from data.
 
 What it defends against
     Hidden or drifting thresholds. A reviewer can read every number that
     decides an alert here, and tests pin the defaults.
 
-Supported range (M-C8)
+Supported range
     * Known source clock offsets up to +/- ``max_supported_offset_ms`` (5 s).
     * Delivery delay (receipt minus corrected event time) up to
       ``max_supported_delay_ms`` (60 s); a negative delay beyond the clock
@@ -35,7 +35,7 @@ def _frozen(mapping: Mapping[str, object]) -> Mapping[str, object]:
 class DetectConfig:
     """Thresholds and policy tables for the detector rules."""
 
-    # M-C7 lateral movement: at least N distinct unexpected services touched by
+    # lateral movement: at least N distinct unexpected services touched by
     # one group within a chain whose consecutive events are at most W apart.
     movement_min_services: int = 2
     movement_window_s: float = 60.0
@@ -88,13 +88,13 @@ class DetectConfig:
     deny_outcomes: frozenset[str] = frozenset({"deny"})
 
     # How many allowed actions after an unapproved role change are labelled
-    # review_after_role_change (PRD M-C6: "the next privileged read").
+    # review_after_role_change ("the next privileged read").
     review_followups: int = 1
     # Whether the follow-up must share the role change's session. Our own key
     # events (grants) carry no device session, so ``export`` turns this off.
     review_same_session: bool = True
 
-    # M-C8 clock and order.
+    # clock and order.
     delayed_delivery_ms: float = 1000.0
     clock_uncertainty_ms: float = 100.0
     max_supported_offset_ms: int = 5000
