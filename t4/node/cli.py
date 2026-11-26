@@ -75,6 +75,8 @@ def build_parser() -> argparse.ArgumentParser:
     add("deliver", "node", "list")
     add("request", "device", "node-id", "asset", "out")
     add("handle", "node", "request")
+    sub = add("owners", "out")
+    sub.add_argument("--node", action="append", required=True, help="repeat for each node")
     sub = add("rotate", "authority", "device")
     sub.add_argument("--lead", type=float, help="seconds until activation (default T + s + 5)")
     return parser
@@ -114,6 +116,10 @@ def run(args: argparse.Namespace) -> dict:
                        owners=data["owners"], contents=data["contents"],
                        freshness=freshness, skew=skew, window=args.window)
         return {"created": "node"}
+    if command == "owners":
+        result = dict(node_at(directory).owners() for directory in args.node)
+        write_json(args.out, result)
+        return {"nodes": len(result)}
     if command == "enroll":
         Device(args.device, load_signer()).enroll(authority_at(args.authority), time.time())
         return {"enrolled": True}

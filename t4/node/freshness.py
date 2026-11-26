@@ -68,6 +68,12 @@ class Node:
             "nonces": {}, "clock_high": 0}})
         return cls(directory, signer, log)
 
+    def owners(self) -> tuple[str, dict[str, str]]:
+        """(node ID, {asset: owner}) as provisioned. No file contents."""
+        with self.store.locked() as txn:
+            record = txn.get(RECORD)
+        return record["node_id"], record["owners"]
+
     def record_event(self, *, actor: str, action: str, target: str, decision: str,
                      rule: str, request_id: str, detail: Mapping[str, Any]) -> None:
         """Append one node event, followed by an alert entry if the rule calls for it."""

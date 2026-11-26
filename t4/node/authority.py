@@ -78,7 +78,7 @@ class Authority:
         return record["T"], record["s"]
 
     def _event(self, action: str, target: str, rule: str, detail: dict) -> None:
-        self.log.append(actor="authority", action=action, target=target, decision="applied",
+        self.log.append(actor="authority", action=action, target=target, decision="allow",
                         rule=rule, request_id=secrets.token_hex(16), detail=detail)
 
     def _revoke_in_vault(self, record: dict, set_name: str, item: str, at: float) -> None:

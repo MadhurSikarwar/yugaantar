@@ -49,6 +49,9 @@ class CommandLine(unittest.TestCase):
         node("provision-node", "--node", edge, "--authority", auth, "--node-id", "n1",
              "--data", data)
         node("enroll", "--authority", auth, "--device", device)
+        owners = self.root / "owners.json"
+        node("owners", "--node", edge, "--out", owners)
+        self.assertEqual(json.loads(owners.read_text()), {"n1": {"f": "maya", "g": "noor"}})
         node("grant", "--authority", auth, "--actor", "maya", "--asset", "g",
              "--approval-id", "change-1")
         node("issue-list", "--authority", auth, "--out", listing)

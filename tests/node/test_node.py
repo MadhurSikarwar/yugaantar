@@ -229,6 +229,9 @@ class GrantsAndLogging(Base):
         self.sync(NOW + 5)
         self.assert_rule(self.ask(self.noor, "file-a", NOW + 6), "NODE-NOT-PERMITTED")
         grant = next(e for e in self.authority_log.entries if e["rule"] == "PERM-GRANT")
+        # The detector export treats any other decision as a refused change.
+        self.assertEqual({e["decision"] for e in self.authority_log.entries}, {"allow"})
+        self.assertEqual((grant["action"], grant["target"]), ("grant", "file-a"))
         self.assertEqual(grant["detail"]["approval_id"], "change-1")
         self.assertEqual(grant["detail"]["subject"], "noor")
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -101,6 +102,39 @@ class RealModules(unittest.TestCase):
             path.write_bytes(b"".join(lines))
             self.assertEqual(respond(node, other.make_request("n1", "f", 1007.0), 1007.0),
                              {"decision": "deny"})
+
+
+@unittest.skipUnless(HAVE_SIG and present("t4.audit.log") and present("t4.detect"),
+                     "real crypto, audit log and detector are not all available")
+class OurLogsReachTheDetector(unittest.TestCase):
+    def test_unapproved_grant_raises_an_alert(self):
+        from t4.detect.export import LogSource, run_export
+        from t4.node.authority import Authority
+        from t4.node.common import open_log
+        from t4.node.device import Device
+        from t4.node.freshness import Node
+        from t4.node.request import respond
+
+        signer = real_signer()
+        with tempfile.TemporaryDirectory(prefix="t4-export-") as folder:
+            root = Path(folder)
+            now = time.time()
+            authority = Authority.create(root / "a", signer, open_log(root / "a-log"))
+            device = Device.create(root / "d", signer, "phone", "noor")
+            device.enroll(authority, now)
+            owners = {"f": "maya"}
+            node = Node.provision(root / "n", signer, open_log(root / "n-log"), node_id="n1",
+                                  authority_pk=authority.public_key, owners=owners,
+                                  contents={"f": "synthetic"})
+            authority.grant("noor", "f", time.time())  # no approval ID
+            self.assertTrue(node.accept_list(authority.issue_list(time.time()), time.time()))
+            reply = respond(node, device.make_request("n1", "f", time.time()), time.time())
+            self.assertEqual(reply["decision"], "allow")
+            export = run_export(
+                [LogSource(root / "a-log", "authority", "authority"),
+                 LogSource(root / "n-log", "node", "n1")], {}, owners={"n1": owners})
+            self.assertIn(("DET-UNAPPROVED-ROLE-CHANGE", "noor"),
+                          [(a.rule, a.identity) for a in export.result.alerts])
 
 
 if __name__ == "__main__":
