@@ -137,3 +137,17 @@ class ConsistencyEmptiedLog(unittest.TestCase):
         path.write_text("\n".join(lines) + "\n")
         result = check(self.dir)
         self.assertTrue(result["problems"], result)
+
+
+@unittest.skipUnless(HAVE_SIG, "needs the real ML-DSA wrapper")
+class ConsistencyStrippedCheckpoints(unittest.TestCase):
+    def test_checkpoints_deleted_from_a_log_that_should_have_them_are_reported(self):
+        with tempfile.TemporaryDirectory(prefix="t4-consist3-") as tmp:
+            state = Path(tmp) / "state"
+            deps = build_default_dependencies(state)
+            dispatch(SETUP, deps)
+            for i in range(40):  # more than two checkpoint intervals (16 entries each)
+                dispatch({"op": "read", "actor": "maya", "asset": "a", "request_id": f"r{i}"}, deps)
+            self.assertFalse(check(state)["problems"])
+            (state / "audit" / "checkpoints.jsonl").write_bytes(b"")
+            self.assertTrue(check(state)["problems"])

@@ -18,3 +18,5 @@ jobs:
       - run: python -m pip install -r requirements-demo.txt -r requirements-dev.txt  # demo-only package lets the messaging tests run
       - run: python scripts/verify_dependencies.py
       - run: python -m pytest -rs
+      - run: python tools/selfattack.py
+      - run: python scripts/e2e_checks.py

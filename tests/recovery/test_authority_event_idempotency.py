@@ -69,6 +69,15 @@ class AuthorityEventIdempotency(unittest.TestCase):
         self.assertEqual(count(self.log_dir, "PERM-REMOVE"), 1)
         self.assertTrue(open_log(self.log_dir).verify().ok)
 
+    def test_a_crashed_grant_retried_after_another_grant_is_still_logged_once(self):
+        self.flaky.arm("PERM-GRANT", "after")
+        with self.assertRaises(Crash):
+            self.authority.grant("bob", "report", 100, approval_id="chg-1")
+        self.authority.grant("carol", "report", 101, approval_id="chg-2")  # a different grant lands first
+        self.authority.grant("bob", "report", 102, approval_id="chg-1")    # the retry
+        entries = [e for e in open_log(self.log_dir).entries() if e["rule"] == "PERM-GRANT"]
+        self.assertEqual(sorted(e["detail"]["subject"] for e in entries), ["bob", "carol"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -144,3 +144,16 @@ def test_pin_advance_rejects_a_log_rewritten_while_it_runs(tmp_path, monkeypatch
     monkeypatch.setattr(AuditLog, "head", rewrite_then_head)
     code = audit_cli.main(["--dir", str(folder), "pin", "advance", "--pin", str(pin)])
     assert code != 0 and pin.read_bytes() == before
+
+
+def test_many_legacy_duplicate_checkpoints_at_the_tail_do_not_stop_appends(tmp_path):
+    """A log written before head() stopped repeating itself can end in a long run of equal checkpoints."""
+    folder = tmp_path / "audit"
+    log = _big_log(folder)
+    cp = folder / audit_log.CHECKPOINT_NAME
+    nl = bytes([10])
+    last = cp.read_bytes().rstrip(nl).split(nl)[-1]
+    with cp.open("ab") as handle:
+        handle.write((last + nl) * 200)
+    _add(log, "still-works-after-200-duplicates")
+    assert log.entries()[-1]["request_id"] == "still-works-after-200-duplicates"

@@ -29,7 +29,7 @@ import json
 import sys
 from pathlib import Path
 
-from t4.audit.log import AuditError, AuditLog
+from t4.audit.log import DEFAULT_CHECKPOINT_EVERY, AuditError, AuditLog
 from t4.api import Track4Error
 from t4.store import FileStore, locate_state_dir, resolve_state_dir
 
@@ -75,6 +75,14 @@ def check(state_dir: Path) -> dict:
         report = AuditLog(effective / "audit", None).verify()
         if not report.ok:
             result["problems"].append("the audit log failed full verification (hash chain or signed checkpoints)")
+        else:
+            # The service signs a checkpoint at every multiple of the interval, so a log without one
+            # at its last multiple has had checkpoints removed (a rebuilt chain would otherwise pass).
+            due = (entries // DEFAULT_CHECKPOINT_EVERY) * DEFAULT_CHECKPOINT_EVERY
+            if due and report.covered_seq < due:
+                result["problems"].append(
+                    f"the audit log has {entries} entries but is signed only up to entry {report.covered_seq}: "
+                    "signed checkpoints are missing")
     if state_generation < log_generation:
         result["problems"].append(
             f"the state is at generation {state_generation} but the audit log has recorded generation "

@@ -643,16 +643,20 @@ class AuditLog:
         the newest checkpoint's own entry too, instead of trusting its recorded hash
         without ever recomputing it (that blind trust was the gap this pair closes).
         """
-        lines, _partial = _tail(self.checkpoint_path, 64)
-        records = [self._parse_checkpoint_record(line) for line in lines]
-        if not records:
-            return None, None
-        newest = records[-1]
-        # Skip repeats at the same sequence number (older versions let ``head()`` sign the same
-        # head again and again): the anchor must be a *different*, earlier entry, or the newest
-        # entry would be trusted without being re-hashed.
-        older = next((r for r in reversed(records[:-1]) if r["seq"] < newest["seq"]), None)
-        return older, newest
+        lookback = 64
+        while True:
+            lines, _partial = _tail(self.checkpoint_path, lookback)
+            records = [self._parse_checkpoint_record(line) for line in lines]
+            if not records:
+                return None, None
+            newest = records[-1]
+            # Skip repeats at the same sequence number (older versions let ``head()`` sign the same
+            # head again and again): the anchor must be a *different*, earlier entry, or the newest
+            # entry would be trusted without being re-hashed.
+            older = next((r for r in reversed(records[:-1]) if r["seq"] < newest["seq"]), None)
+            if older is not None or len(lines) < lookback:  # found one, or the whole file was read
+                return older, newest
+            lookback *= 16
 
     @staticmethod
     def _compare_with_checkpoint(checkpoint: dict, count: int, entries: list[dict]) -> None:

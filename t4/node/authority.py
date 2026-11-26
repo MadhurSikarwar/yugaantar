@@ -225,15 +225,16 @@ class Authority:
                 raise NodeError("actor is revoked")
             key = grant_key(actor, asset)
             record["grants"][key] = {"actor": actor, "asset": asset, "approval_id": approval_id}
-            # Each grant gets a number saved with the state. The log entry is written first, so a
-            # crash before the save leaves the number unused and a retry logs the same entry once,
-            # while a later, deliberate re-grant gets a new number and its own entry.
-            op = int(record.get("op_seq", 0)) + 1
-            record["op_seq"] = op
-            record.setdefault("grant_ops", {})[key] = op
+            # Each (actor, asset) pair has its own grant counter, saved with the state. The log entry
+            # is written first, so a crash before the save leaves the counter unchanged and a retry
+            # logs the same entry once, even if other grants were made in between. A later,
+            # deliberate re-grant (after an ungrant) gets the next number and its own entry.
+            counts = record.setdefault("grant_counts", {})
+            number = int(counts.get(key, 0)) + 1
+            counts[key] = number
             self._event("grant", asset, "PERM-GRANT", {
                 "subject": actor, "approval_id": approval_id, "granted_by": granted_by},
-                identity=["grant", actor, asset, approval_id, op])
+                identity=["grant", actor, asset, approval_id, number])
             txn.put(RECORD, record)
 
     def ungrant(self, actor: str, asset: str, now: float, *, granted_by: str = "authority") -> None:
@@ -245,7 +246,7 @@ class Authority:
             record = require_record(txn.get(RECORD), "authority")
             key = grant_key(actor, asset)
             record["grants"].pop(key, None)
-            grant_op = record.get("grant_ops", {}).get(key, 0)  # which grant is being removed (kept until the next grant)
+            grant_op = record.get("grant_counts", {}).get(key, 0)  # which grant is being removed
             txn.put(RECORD, record)
             for step in (lambda: self._revoke_in_vault(
                              record, "removed_grants", key, max(now, record["last_issued_at"])),
