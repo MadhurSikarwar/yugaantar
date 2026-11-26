@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import secrets
 
 
@@ -38,6 +39,14 @@ class MemoryLog:
             assert type(value) in (str, int, bool), "detail values must be str, int or bool"
         self.entries.append({"seq": len(self.entries) + 1, **entry})
         return {"seq": len(self.entries), "hash": ""}
+
+    def alert(self, *, rule, explanation, actor="", target="", request_id="", entries=(),
+              request_ids=(), detail=None) -> dict:
+        extra = {**(detail or {}), "explanation": explanation,
+                 "entries": json.dumps(list(entries)),
+                 "request_ids": json.dumps(list(request_ids))}
+        return self.append(actor=actor, action="alert", target=target, decision="alert",
+                           rule=rule, request_id=request_id, detail=extra)
 
     def rules(self) -> list[str]:
         return [entry["rule"] for entry in self.entries]

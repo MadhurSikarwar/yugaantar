@@ -74,6 +74,34 @@ class RealModules(unittest.TestCase):
             self.assertEqual(respond(node, device.make_request("n1", "f", 1004.0), 1004.0),
                              {"decision": "deny"})
 
+            for name in ("a-log", "n-log"):
+                report = open_log(root / name).verify()
+                self.assertTrue(report.ok, report.errors)
+                self.assertEqual(report.covered_seq, report.entries)  # all signed
+            node_log = open_log(root / "n-log")
+            self.assertIn("NODE-DEVICE-REVOKED", [e["rule"] for e in node_log.alerts()])
+            self.assertEqual([e["rule"] for e in open_log(root / "a-log").entries()],
+                             ["KEY-ENROLL", "KEY-REVOKE-DEVICE"])
+
+            path = root / "n-log" / "audit.jsonl"
+            original = path.read_bytes()
+            # An edited OLD entry is found by a full verify, not by each append.
+            changed = original.replace(b'"decision":"deny"', b'"decision":"allow"', 1)
+            self.assertNotEqual(changed, original)
+            path.write_bytes(changed)
+            self.assertFalse(node_log.verify().ok)
+
+            # An edited NEWEST entry stops the node from releasing anything.
+            other = Device.create(root / "d2", signer, "tablet", "maya")
+            other.enroll(authority, 1005.0)
+            path.write_bytes(original)
+            self.assertTrue(node.accept_list(authority.issue_list(1006.0), 1006.0))
+            lines = path.read_bytes().splitlines(keepends=True)
+            lines[-1] = lines[-1].replace(b'"decision":"accept"', b'"decision":"reject"')
+            path.write_bytes(b"".join(lines))
+            self.assertEqual(respond(node, other.make_request("n1", "f", 1007.0), 1007.0),
+                             {"decision": "deny"})
+
 
 if __name__ == "__main__":
     unittest.main()

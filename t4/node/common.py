@@ -15,7 +15,7 @@ import binascii
 import json
 import math
 from pathlib import Path
-from typing import Any, Mapping, Protocol
+from typing import Any, Iterable, Mapping, Protocol
 
 MAX_TEXT = 4096
 MAX_TIME = 1e12
@@ -39,6 +39,11 @@ class KeyLog(Protocol):
     def append(self, *, actor: str, action: str, target: str, decision: str,
                rule: str, request_id: str,
                detail: Mapping[str, str | int | bool]) -> dict: ...
+
+    def alert(self, *, rule: str, explanation: str, actor: str = "", target: str = "",
+              request_id: str = "", entries: Iterable[int] = (),
+              request_ids: Iterable[str] = (),
+              detail: Mapping[str, str | int | bool] | None = None) -> dict: ...
 
 
 try:  # The interface owner's type wins once it exists.
@@ -67,12 +72,18 @@ def load_signer() -> Signer:
 
 
 def open_log(directory: str | Path) -> KeyLog:
-    """Return the real audit log. There is deliberately no fallback."""
+    """Return the real signed audit log. There is deliberately no fallback.
+
+    Each log has its own signing key, kept in the log directory, and signs a
+    checkpoint after every entry so even a short log is fully covered. Pin the
+    head and public key elsewhere to detect a rewrite by someone who can read
+    that key.
+    """
     try:
-        from t4.audit.log import AuditLog  # type: ignore
+        from t4.audit.log import AuditLog, load_or_create_signer  # type: ignore
     except ImportError:
         raise NodeError("t4.audit.log is not available") from None
-    return AuditLog(Path(directory), None)
+    return AuditLog(Path(directory), load_or_create_signer(directory), checkpoint_every=1)
 
 
 def canonical(value: Any) -> bytes:

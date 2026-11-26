@@ -74,12 +74,10 @@ class Node:
         entry = self.log.append(actor=actor, action=action, target=target, decision=decision,
                                 rule=rule, request_id=request_id, detail=dict(detail))
         if rule in ALERT_TEXT:
-            alert = {"explanation": ALERT_TEXT[rule], "node_id": detail.get("node_id", ""),
-                     "trigger_request_id": request_id}
-            if isinstance(entry, dict) and type(entry.get("seq")) is int:
-                alert["trigger_seq"] = entry["seq"]
-            self.log.append(actor=actor, action="alert", target=target, decision="alert",
-                            rule=rule, request_id=request_id, detail=alert)
+            self.log.alert(rule=rule, explanation=ALERT_TEXT[rule], actor=actor, target=target,
+                           request_id=request_id, entries=[entry["seq"]],
+                           request_ids=[request_id],
+                           detail={"node_id": detail.get("node_id", "")})
 
     def accept_list(self, signed_list: Any, now: float) -> bool:
         """True if the list was stored. Never raises on bad input."""

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -246,8 +247,8 @@ class GrantsAndLogging(Base):
         self.assertEqual(event["detail"]["device_id"], "maya-phone")
         self.assertTrue(event["detail"]["signature_verified"])
         self.assertEqual(alert["decision"], "alert")
-        self.assertEqual(alert["detail"]["trigger_seq"], event["seq"])
-        self.assertEqual(alert["detail"]["trigger_request_id"], decision.request_id)
+        self.assertEqual(json.loads(alert["detail"]["entries"]), [event["seq"]])
+        self.assertEqual(json.loads(alert["detail"]["request_ids"]), [decision.request_id])
         self.assertTrue(alert["detail"]["explanation"])
 
     def test_no_key_material_in_logs(self):
