@@ -372,7 +372,7 @@ export default function Console() {
         privacy:
           "Files are parsed in memory and never uploaded. In live mode the page talks only to the bridge on this computer, with synthetic data.",
         format:
-          "schemaVersion, capturedAt, devices, nodes, audit, verifications. The full contract is in frontend/README.md.",
+          "schemaVersion, capturedAt, devices, nodes, audit, verifications. The full contract is in the project README.",
         limits:
           "5 MB per file and 5,000 entries per collection. Unknown fields are discarded.",
         trust:

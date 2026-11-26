@@ -1,6 +1,6 @@
-"""Test doubles for the modules c1 depends on but does not own (audit log, crypto).
+"""Test doubles for the audit log and crypto modules.
 
-Unit tests use these so they pass on a branch that does not contain c2's code.
+Unit tests use these so they run without those modules.
 Nothing here is shipped; it is test support only.
 """
 from __future__ import annotations
@@ -64,7 +64,7 @@ class FakeKem:
 
 
 class RealProof:
-    """The documented proof construction, written independently of c2's code."""
+    """The documented proof construction, written independently of the application code."""
 
     @staticmethod
     def make_proof(shared_secret: bytes, challenge: bytes, stored_body: bytes) -> str:

@@ -1,6 +1,6 @@
-"""Shared pytest helpers (owned by c1).
+"""Shared pytest helpers.
 
-Keeps state directories outside the repository (PRD rule 3): every test that
+Keeps state directories outside the repository : every test that
 needs a state directory gets a fresh temporary one.
 """
 from __future__ import annotations

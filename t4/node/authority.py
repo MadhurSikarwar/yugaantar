@@ -3,7 +3,7 @@
 It holds its own ML-DSA key in its own state directory and publishes signed,
 numbered revocation lists that nodes use to decide requests.
 
-Timing rule behind the freshness bound (PRD 4.3): a revocation takes effect at
+Timing rule behind the freshness bound : a revocation takes effect at
 ``max(now, newest list date)``. So no list dated after the revocation time can
 omit it. The same rule applies to rotation announcements.
 
@@ -225,7 +225,7 @@ class Authority:
             raise NodeError("revoked, but recording it in the vault or log failed") from failure
         return at
 
-    # -- permission grants (M-N5) ----------------------------------------
+    # -- permission grants  ----------------------------------------
 
     def grant(self, actor: str, asset: str, now: float, *, approval_id: str = "",
               granted_by: str = "authority") -> None:

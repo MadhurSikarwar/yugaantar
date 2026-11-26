@@ -241,7 +241,7 @@ def test_integrity_alert():
 
 
 def test_the_guard_exposes_no_way_to_block_anything():
-    """Structural check for the rule 'the guard never changes an outcome' (PRD S-A9)."""
+    """Structural check for the rule 'the guard never changes an outcome'."""
     public = {name for name in dir(Guard) if not name.startswith("_")}
     assert public == {"on_denial", "on_duplicate_request_id", "on_invalid_input", "to_doc"}
     assert all(callable(getattr(Guard, name)) for name in public)

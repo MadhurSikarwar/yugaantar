@@ -31,7 +31,7 @@ Safety, stated plainly:
   * Request bodies are capped at 1 MiB and must be JSON. Adapter errors return a fixed label,
     never stderr, request data, keys or contents.
   * It is NOT an authentication layer. The adapter decides permission from the actor it is given
-    (docs/threat-model.md), and so does this bridge: anyone who can reach this port can act as any
+    (see the README's limits section), and so does this bridge: anyone who can reach this port can act as any
     actor. Run it on a developer machine, never on a shared host or a public interface.
   * Everything lives in a temporary directory outside the repository and holds synthetic data.
     This file is demo tooling and is not part of the judged runtime (check_all.py does not scan it).

@@ -1,105 +1,126 @@
 # Trust, but verify: post-quantum protected files with verifiable decisions
 
-Yugaantar DevForge, Track 4. A protected-file service for the lost-device case:
-- an owner reads a file
-- access is revoked, and the owner is denied
-- a second owner still reads their own file
-- an operator can see in a tamper-evident log which rule decided each request
+Yugaantar DevForge, Track 4.
 
-**USP:** every allow, deny and alert is logged with the rule and events behind it. Anyone holding a pinned checkpoint and the public key can verify that the log up to that point has not been altered. Full tamper detection needs an operator to run `verify-log` against a pin kept outside the directory. The running service re-checks logs up to 256 KiB in full on each write, and a bounded part of larger ones.
+A protected-file service for the lost-device case: an owner reads a file, access is revoked and the owner is denied, a second owner still reads their own file, and an operator can see in a tamper-evident log which rule decided each request.
 
-- **Post-quantum parts:** ML-KEM-768 for the `protected_read` proof. ML-DSA-65 for audit checkpoints, device requests and revocation lists.
-- **What it does not do:** it doesn't encrypt files in transit, and the judged adapter doesn't authenticate callers (it trusts the `actor` string and enforces permissions). Device identity is verified in the node layer. See `docs/threat-model.md`.
+- **Post-quantum parts:** ML-KEM-768 for the `protected_read` proof; ML-DSA-65 for audit checkpoints, device requests and revocation lists.
+- **What it does not do:** it does not encrypt files in transit, and the five-operation adapter does not authenticate callers (it checks permission for the `actor` it is given). Device identity is verified in the node layer.
 
 ## Contents
 
 | Path | What |
 |---|---|
-| `track4_service.py`, `team_app.py`, `t4/service.py` | The judged adapter: `setup`, `read`, `revoke`, `audit`, `protected_read` |
-| `t4/` | Validation, policy, state store, guard, crypto wrappers, audit log, node layer, rotation, backup, detector |
-| `tools/` | `selfattack.py` (red team), `gen_logs.py` (labelled test data), `nodes_sim.py` (revocation timing), `bench.py` (latency) |
-| `demo/` | `DEMO_SCRIPT.md` and `run_demo.py` (the 5-minute story, one command) |
-| `docs/` | `architecture.md`, `threat-model.md`, `evidence-sheet.md`, `detector-metrics.md`, `selfattack-report.md`, `CONTRACT_FACTS.md`, `brief/` |
-| `scripts/check_all.py` | One command: layout, static scan, secret scan (tree and Git history), validator, tests |
+| `track4_service.py`, `team_app.py`, `t4/service.py` | The adapter: `setup`, `read`, `revoke`, `audit`, `protected_read` |
+| `t4/` | Validation, policy, state, guard, cryptography wrappers, audit log, devices and nodes, rotation, backup, detector |
+| `tools/` | Attack suite, test-data generator, revocation timing, benchmark, web bridge |
+| `tests/` | Test suite |
+| `demo/run_demo.py` | The lost-device story in one command |
+| `frontend/` | Web console and landing page (React, TypeScript) |
+| `scripts/` | One-command checks, judging-worker simulator, dependency verification |
+| `docs/brief/` | Two-page project brief with the one-page threat model |
 
-## Setup on a clean machine
+## Setup
 
-Requirements: **Python 3.12** and Git. The runtime dependencies are `pqcrypto==0.4.0`, plus `cffi` and `pycparser`, which it pulls in (`requirements.txt`). Development needs only `pytest` (`requirements-dev.txt`). The runtime uses nothing else outside the standard library and makes no network calls. **Optional, demo only:** `demo/messaging.py` needs the vetted `cryptography` package, pinned to 50.0.2 in `requirements-demo.txt`. The judged adapter and `t4/` never import it.
+Requirements: **Python 3.12** and Git. Runtime dependencies: `pqcrypto==0.4.0` and the `cffi` and `pycparser` it pulls in (`requirements.txt`). Tests need `pytest` (`requirements-dev.txt`). Everything else is the Python standard library. The service makes no network calls.
 
 ```sh
 git clone https://github.com/MadhurSikarwar/yugaantar.git
-git clone https://github.com/ScalerOpenSourceLabs/Track-4-Toolkit.git   # sibling folder, never inside the repo
+git clone https://github.com/ScalerOpenSourceLabs/Track-4-Toolkit.git   # next to the repository, not inside it
 cd yugaantar
 python3.12 -m venv .venv
 . .venv/bin/activate                       # Windows: .venv\Scripts\activate
 python -m pip install -r requirements.txt -r requirements-dev.txt
 ```
 
-All state, key, node and authority directories are created **outside the repository**. The adapter uses `TRACK4_STATE_DIR`, or the OS temp directory if it's unset. No key is stored in the repository. On Linux and macOS, a state folder we own is made private (`chmod 0700`). In a shared folder like `/tmp`, the state goes into our own `track4-state-<uid>` subfolder. So point `TRACK4_STATE_DIR` at a dedicated folder, never at a folder holding other files (`docs/CONTRACT_FACTS.md`, section 5b).
+Optional, for the encrypted-messaging demo and its tests only: `python -m pip install -r requirements-demo.txt` (adds the `cryptography` package). The adapter and `t4/` never import it.
 
-These steps were followed from a fresh GitHub clone on WSL Ubuntu 24.04 with Python 3.12.3, with the repository read-only. Results are in `docs/evidence-sheet.md`, run L3.
+State, key, node and authority folders are created **outside the repository**. The adapter uses `TRACK4_STATE_DIR`, or the OS temp folder if it is unset; point it at a dedicated folder. On Linux and macOS a folder you own is made private (`0700`). In a shared folder such as `/tmp` the state goes into a private `track4-state-<uid>` subfolder.
 
 ## Run
 
 ```sh
-# One request, as the judges send it (new process per request):
+# One request per process:
 echo '{"op":"setup","owners":{"brief":"maya"},"contents":{"brief":"demo note"},"disabled":[],"key_material":"x"}' | python track4_service.py
 echo '{"op":"read","actor":"maya","asset":"brief","request_id":"r1"}' | python track4_service.py
 
-# The whole 5-minute story in one command (synthetic data, temporary directories):
+# The whole story in one command (synthetic data, temporary folders):
 python demo/run_demo.py
-
-# The web console connected to the real backend (needs Node 22+ once: cd frontend && npm ci && npm run build):
-python tools/bridge.py        # then open http://127.0.0.1:8765/#/console and choose "Connect to backend"
 ```
 
-The bridge is demo tooling for a developer machine (localhost only, synthetic data, no authentication of the actor). See `frontend/README.md`, section "Live backend".
+## Web console
 
-## How to verify every claim
+Needs Node.js 22.18+ or 24.
 
-Each line is a command, and each result has been reproduced (see `docs/evidence-sheet.md` for run dates and numbers).
+```sh
+cd frontend
+npm ci
+npm run build
+cd ..
+python tools/bridge.py        # open http://127.0.0.1:8765/#/console and choose "Connect to backend"
+```
 
-| Claim | Command |
+Checks, from `frontend/`: `npm run check`, `npm test`, `npm run build`. For development use `npm run dev` together with `python tools/bridge.py --no-start` (Vite forwards `/api` to the bridge).
+
+The bridge serves the built console and runs the real backend on synthetic data in a temporary folder: adapter calls start `track4_service.py` as a new process, signed node requests, rotation and revocation use `t4.node` on a simulated clock, and the audit logs are checked by `t4.audit.verify`. The browser runs no cryptography. The bridge is **not an authentication layer**: anyone who can reach its port can act as any actor. It listens on 127.0.0.1 only; run it on a developer machine, never on a shared host.
+
+Without a backend the console loads nothing by default. You can load a clearly labelled synthetic sample or import a JSON snapshot. Imported results are shown as reported claims; importing verifies nothing. Files stay in browser memory (limit 5 MB and 5,000 entries per collection). Do not import secrets.
+
+### Snapshot format
+
+`{"schemaVersion": 1, "capturedAt": "<ISO time with zone>", "devices": [], "nodes": [], "audit": [], "verifications": []}`. All arrays are required and may be empty.
+
+| Collection | Fields |
 |---|---|
-| Passes the official contract | `python ../Track-4-Toolkit/validate.py --entry ./track4_service.py` → exit 0 |
-| Everything at once | `python scripts/check_all.py --toolkit ../Track-4-Toolkit` → `ALL CHECKS PASSED` |
-| Full test suite | `python -m pytest -q` |
-| Attacks from PRD section 8 fail | `python tools/selfattack.py --entry track4_service.py --report <out.md>` |
-| Log tampering is detected | `python -m t4.audit.cli --dir <log dir> head --out <pin.json>`, then `verify-log --pin <pin.json>` |
+| `devices` | `id`, `owner`, `keyVersion` (whole number), `state`: `active` or `revoked` |
+| `nodes` | `id`, `state`: `current`, `stale` or `offline`, `listVersion`, `deviceIds`, `lastUpdated` |
+| `audit` | `requestId`, `actor`, `action`, `asset`, `rule`, `timestamp`, `decision`: `allow` or `deny` |
+| `verifications` | `id`, `detail`, `kind`: `audit-chain`, `checkpoint`, `device-signature` or `protected-read`; `outcome`: `valid`, `invalid` or `not-checked` |
+
+## Verify
+
+| Check | Command |
+|---|---|
+| Official contract | `python ../Track-4-Toolkit/validate.py --entry ./track4_service.py` |
+| Layout, scans, validator and tests | `python scripts/check_all.py --toolkit ../Track-4-Toolkit` |
+| Test suite | `python -m pytest -q` (permission and symlink tests run on Linux and macOS only) |
+| Attack suite against the adapter | `python tools/selfattack.py --entry track4_service.py` |
+| End-to-end checks | `python scripts/e2e_checks.py` |
+| Judging-worker simulation | `python scripts/sandbox_sim.py --ref HEAD --toolkit ../Track-4-Toolkit` |
+| Installed dependencies match the pins | `python scripts/verify_dependencies.py` |
+| Log tampering is detected | `python -m t4.audit.cli --dir <log dir> head --out <pin.json>`, later `verify-log --pin <pin.json>` |
 | Why a request was denied | `python -m t4.audit.cli --dir <log dir> explain <request_id>` |
-| A damaged or shortened audit log is refused and recorded | `python -m pytest tests/integration/test_audit_history_and_alerts.py -q`; on a live state: `python -m t4.audit.cli --dir <state dir>/alerts alerts` |
-| An authority restore cannot revive a replaced key or a revoked device | `python -m pytest tests/recovery/test_restore_security.py -q` |
-| Detector with another environment's service rules | `python -m t4.detect.cli detect --dir <dir> --policy <policy.json>` (format: `t4/detect/policy_file.py`) |
-| Full audit verification, with a pin kept outside the directory | `python -m t4.audit.cli --dir <log dir> pin init --pin <pin.json>`, later `verify-log --pin <pin.json>`, then `pin advance --pin <pin.json>` (exit 1 on any failure) |
-| State is not older than the audit log (a state file rolled back on its own) | `python -m t4.consistency --state-dir <dir>` (exit 1 if inconsistent) |
-| Storage use and free space | `python -m t4.storage_status --state-dir <dir>` (exit 1 or 2 on low space or large files) |
-| The pinned cryptographic dependencies are installed and untouched | `python scripts/verify_dependencies.py` (exit 1 on a mismatch) |
-| One rotation is logged once, even when the process is killed | `python -m tests.recovery.external_kill --trials 100` (fails on a duplicate) |
+| Saved state is not older than the audit log | `python -m t4.consistency --state-dir <dir>` |
+| Storage use and free space | `python -m t4.storage_status --state-dir <dir>` |
+| Alerts for a damaged or shortened audit log | `python -m t4.audit.cli --dir <state dir>/alerts alerts` |
 | Revocation reaches every node within `r + T + s` | `python tools/nodes_sim.py --nodes 4 --runs 3 --seed 1` |
-| Rotation and backup survive a crash at every step | `python -m pytest tests/recovery -q` |
+| Rotation and backup survive crashes | `python -m pytest tests/recovery -q` |
+| Rotation under real process kills | `python -m tests.recovery.external_kill --trials 100` |
 | Detector on the public practice events | `python -m t4.detect.cli evaluate --dir tests/detect/data/practice` |
 | Detector on held-out generated events | `python tools/gen_logs.py --out <dir> --held-out`, then `python -m t4.detect.cli evaluate --dir <dir>` |
-| Alerts from our own signed logs | `python -m t4.detect.cli export --node node-a=<dir> ... --authority <dir> --approvals <file> --owners <file> --append-alerts <dir>` (`demo/run_demo.py` does this end to end) |
-| Latency per operation (cold process) | `python tools/bench.py` |
-| Demo-layer messaging refuses replays, wrong recipients and any changed field | `pip install -r requirements-demo.txt`, then `python -m pytest tests/unit/test_demo_messaging.py -q` |
+| Detector with other service rules | `python -m t4.detect.cli detect --dir <dir> --policy <policy.json>` (format: `t4/detect/policy_file.py`) |
+| Latency per operation | `python tools/bench.py` |
 
 ## Detector input
 
 Event files: columns are matched by name (extra ones are ignored); times are UTC written with `Z` or `+00:00`. If an event ID repeats, the first record is analysed; an identical re-delivery is ignored and a differing copy raises `DET-CONFLICTING-DUPLICATE`. The default roles, services and approver (`user-admin`) follow the toolkit's practice data. For other names use `--approver NAME` (repeatable) and `--policy FILE`; an unconfigured role raises `DET-ROLE-NOT-CONFIGURED`, and an approval by an approver you have not named counts as unapproved.
 
-## Limits (short version)
+## Security model and limits
 
-The full list is in `docs/threat-model.md`.
-- No caller authentication in the adapter.
-- A full rollback of a state directory can't be detected locally.
-- Anyone with write access to a directory can read its signing key.
-- No transport encryption or forward secrecy in the adapter (goals 10 to 12 are not supported). Goal 9 (replay and recipient checks for messages) exists only in the optional demo layer, `demo/messaging.py`.
-- The detector is measured only on synthetic data.
-- The running service fully re-checks logs up to 256 KiB on each write (and fails closed). Older parts of larger logs are checked by `verify-log`. `audit`'s `rule` field reveals denial reasons to any caller (accepted, `coord/DECISIONS.md` D-004).
-- Some review findings are still open (listed in the threat model).
+- **No caller authentication in the adapter.** The request carries no credential, so anyone who can call it can claim any actor, including for `setup` and `revoke`. A second `setup` starts over and clears revocations.
+- **Device identity** is proven only in the node layer: signature, node binding, owner, key version, time window and a single-use nonce. Rotation has no grace period. A node whose revocation list is older than T denies everything.
+- **Local storage is the trust boundary.** Keys sit next to the data. Whoever can write a state, node or authority folder can read its keys and rebuild a consistent log. Restoring a whole folder to an older copy is not detected locally; only a head and public key pinned elsewhere expose it, up to the pinned entry. Restoring old node state can let a recent request be replayed within its time window.
+- **Audit logs** are hash-chained with signed checkpoints and grow without limit. The running service re-checks only a bounded amount of a large log; older edits are found by `verify-log`. `audit` also returns the rule that decided, which tells any caller why a request was denied.
+- **Lost or damaged history** that the service notices is refused and recorded in a second signed log in the same state folder. Later entries of some kinds can still be removed unnoticed without an outside pin.
+- **Backups** are authenticated, not encrypted: they hold private keys. A restore loses newer enrolments and grants. An authority restore re-applies later revocations and key versions from its vault ledger, so it depends on that ledger being current.
+- **No encryption in transit and no forward secrecy.** Message delivery guarantees and session resumption are not built. Replay and recipient checks for messages exist only in the optional demo, `demo/messaging.py`.
+- The **detector** uses fixed rules (no machine learning) and has been measured only on synthetic data.
+- Side channels in the compiled cryptography library have not been assessed; secrets cannot be erased from Python memory.
 
 ## Attribution
 
-- `track4_service.py` is based on the Python starter adapter of the official **Track 4 participant toolkit** (https://github.com/ScalerOpenSourceLabs/Track-4-Toolkit, commit `8901dfb`). It keeps the starter's structure: one JSON object in, `json.dumps(..., allow_nan=False)` out, a generic stderr line and exit 1 on failure. It adds a size-capped strict UTF-8 read of stdin, ASCII output and failure recording. The evidence-sheet and two-page brief structure follow the toolkit's `templates/`. `tests/detect/data/practice/` contains unchanged copies of the toolkit's synthetic practice files. The toolkit's demo application logic was **not** copied.
-- **pqcrypto 0.4.0** (https://pypi.org/project/pqcrypto/) provides ML-KEM-768 (FIPS 203) and ML-DSA-65 (FIPS 204). **cffi** and **pycparser** are its dependencies. **pytest** is used for tests only. **cryptography** (https://cryptography.io, Apache-2.0 or BSD-3-Clause) provides ChaCha20-Poly1305 and HKDF for the optional `demo/messaging.py` only.
-- Standard constructions used from the Python standard library: HMAC-SHA256 (RFC 2104) and SHA-256.
+- `track4_service.py` is based on the Python starter adapter of the official Track 4 participant toolkit (https://github.com/ScalerOpenSourceLabs/Track-4-Toolkit, commit `8901dfb`). `tests/detect/data/practice/` holds unchanged copies of the toolkit's synthetic practice files. The toolkit's demo application was not copied.
+- **pqcrypto 0.4.0** (https://pypi.org/project/pqcrypto/) provides ML-KEM-768 (FIPS 203) and ML-DSA-65 (FIPS 204); **cffi** and **pycparser** are its dependencies. **pytest** is used for tests.
+- **cryptography** (https://cryptography.io, Apache-2.0 or BSD-3-Clause) is used only by `demo/messaging.py`.
+- HMAC-SHA256 (RFC 2104) and SHA-256 come from the Python standard library.
+- Web console: [React](https://react.dev/) (MIT), [Vite](https://vite.dev/) (MIT), [TypeScript](https://www.typescriptlang.org/) (Apache-2.0), Prettier (MIT, formatting only) and the [Instrument Sans](https://fontsource.org/fonts/instrument-sans) font (SIL Open Font License), bundled locally.

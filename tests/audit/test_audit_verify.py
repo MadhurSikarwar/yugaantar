@@ -1,4 +1,4 @@
-"""Every tamper case in PRD section 8 (items 3 and 5), plus the operator commands."""
+"""Every tamper case, plus the operator commands."""
 
 import json
 import shutil

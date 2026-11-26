@@ -1,6 +1,6 @@
 """Judge-style tests: a fresh process per request, a fresh state directory per scenario.
 
-These drive ``track4_service.py`` exactly as the worker does. They need c2's
+These drive ``track4_service.py`` exactly as the worker does. They need the
 audit log and crypto modules, so on a branch that does not contain them they are
 skipped (they run on the ``integration`` branch and in ``scripts/check_all.py``).
 """
@@ -18,10 +18,10 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip("t4.audit.log", reason="needs c2's audit log")
-pytest.importorskip("t4.crypto.kem", reason="needs c2's crypto wrappers")
-pytest.importorskip("t4.crypto.proof", reason="needs c2's crypto wrappers")
-pytest.importorskip("t4.crypto.sig", reason="needs c2's crypto wrappers")
+pytest.importorskip("t4.audit.log", reason="needs the audit log")
+pytest.importorskip("t4.crypto.kem", reason="needs the crypto wrappers")
+pytest.importorskip("t4.crypto.proof", reason="needs the crypto wrappers")
+pytest.importorskip("t4.crypto.sig", reason="needs the crypto wrappers")
 
 from pqcrypto.kem import ml_kem_768  # noqa: E402  (independent client side of the KEM)
 
@@ -201,7 +201,7 @@ def test_invalid_input_is_alerted_in_the_audit_log(adapter):
     assert b"AUD-INVALID-INPUT" in logged
 
 
-# --- c2's security review: state growth and an interrupted first setup ----------------------------------------
+# --- state growth and an interrupted first setup ----------------------------------------
 
 
 def test_a_flood_of_4kib_identifiers_does_not_disable_the_service(adapter):
@@ -221,7 +221,7 @@ def test_an_empty_key_file_from_an_interrupted_first_setup_does_not_block_setup(
     assert adapter.call(op="read", actor="maya", asset="brief", request_id="r") == {"decision": "allow", "body": "demo note"}
 
 
-# --- state directory permissions (c3 and c4: setup failed on Linux in a 0755 folder) -----------------------------
+# --- state directory permissions (setup on Linux in a 0755 folder) -----------------------------
 
 POSIX_ONLY = pytest.mark.skipif(sys.platform == "win32", reason="POSIX permissions and ownership")
 
@@ -326,7 +326,7 @@ def test_outputs_stay_far_below_the_64_kib_stream_cap(adapter):
         assert len(out) < 4096 and len(err) < 4096
 
 
-# --- the operator's view (c2's audit CLI reading what the adapter wrote) -------------------------------
+# --- the operator's view (the audit CLI reading what the adapter wrote) -------------------------------
 
 
 def _audit_cli(adapter: Adapter, *args: str) -> subprocess.CompletedProcess:

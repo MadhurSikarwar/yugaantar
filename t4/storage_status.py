@@ -13,7 +13,7 @@ it never opens the state file's contents or any key.
 
 The audit log is append-only and is never trimmed by this service. Keeping the volume from filling
 (more space, moving old history to verified archive storage) is an operator decision; see
-docs/FINAL_THREAT_MODEL.md.
+the README's limits section.
 """
 from __future__ import annotations
 
