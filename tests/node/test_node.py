@@ -101,6 +101,8 @@ class Requests(Base):
     def test_clock_set_backwards(self):
         self.assert_rule(self.ask(self.maya, "file-a", NOW + 20), "NODE-ALLOW-OWNER")
         self.assert_rule(self.ask(self.maya, "file-a", NOW + 5), "NODE-CLOCK-ROLLBACK")
+        alert = self.node_log.entries[-1]
+        self.assertEqual((alert["decision"], alert["rule"]), ("alert", "NODE-CLOCK-ROLLBACK"))
 
     def test_malformed_input_denies_without_crashing(self):
         good = self.maya.make_request("node-1", "file-a", NOW)
