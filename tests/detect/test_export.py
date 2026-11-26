@@ -61,11 +61,12 @@ def world(tmp_path):
         logs["authority"].append(actor="user-admin", action=action, target=target, decision="allow",
                                  rule="KEY-" + action.upper(), request_id=f"k{at}", detail=detail)
 
-    def read(at, node, actor, asset, decision, device):
+    def read(at, node, actor, asset, decision, device, verified=True):
         clock.at(at)
         logs[node].append(actor=actor, action="read", target=asset, decision=decision,
                           rule="POL-OWNER" if decision == "allow" else "POL-NOT-OWNER",
-                          request_id=f"r-{node}-{at}", detail={"node_id": node, "device_id": device})
+                          request_id=f"r-{node}-{at}",
+                          detail={"node_id": node, "device_id": device, "signature_verified": verified})
 
     # Routine owner reads.
     read(1, "node-a", "alice", "file-alice", "allow", "dev-alice")
@@ -82,6 +83,14 @@ def world(tmp_path):
     read(32, "node-c", "eve", "file-carol", "deny", "dev-eve")
     # One isolated denial: no alert.
     read(40, "node-c", "bob", "file-carol", "deny", "dev-bob")
+    # Routine authority administration: no alert.
+    clock.at(50)
+    logs["authority"].append(actor="authority", action="enroll", target="dev-new", decision="allow",
+                             rule="KEY-ENROLL", request_id="k50", detail={"owner": "bob", "version": 1})
+    # Forged requests naming an innocent actor (bad signature): never attributed to her.
+    read(100, "node-a", "maya", "file-alice", "deny", "dev-x", verified=False)
+    read(101, "node-b", "maya", "file-bob", "deny", "dev-x", verified=False)
+    read(102, "node-c", "maya", "file-carol", "deny", "dev-x", verified=False)
     for log in logs.values():
         log.head()
     sources = [exp.LogSource(dirs["authority"], "authority", "authority")]
@@ -93,8 +102,9 @@ def test_alerts_from_our_own_logs(world):
     dirs, sources = world
     result = exp.run_export(sources, _change_register(), owners=OWNERS, alert_log=dirs["authority"])
     rules = sorted(a.rule for a in result.result.alerts)
-    assert rules == ["DET-LATERAL-MOVEMENT", "DET-REVIEW-AFTER-ROLE-CHANGE", "DET-UNAPPROVED-ROLE-CHANGE"]
-    by_rule = {a.rule: a for a in result.result.alerts}
+    assert rules == ["DET-LATERAL-MOVEMENT", "DET-LATERAL-MOVEMENT",
+                     "DET-REVIEW-AFTER-ROLE-CHANGE", "DET-UNAPPROVED-ROLE-CHANGE"]
+    by_rule = {a.rule: a for a in result.result.alerts if a.identity != exp.UNVERIFIED_ACTOR}
     move = by_rule["DET-LATERAL-MOVEMENT"]
     assert move.identity == "eve"
     assert move.services == ("node-a/file-alice", "node-b/file-bob", "node-c/file-carol")
@@ -108,7 +118,7 @@ def test_alerts_from_our_own_logs(world):
 def test_alerts_are_appended_once_and_logged_with_request_ids(world):
     dirs, sources = world
     first = exp.run_export(sources, _change_register(), owners=OWNERS, alert_log=dirs["authority"])
-    assert len(first.appended) == 3
+    assert len(first.appended) == 4
     alerts = AuditLog(dirs["authority"], None).alerts()
     move = next(a for a in alerts if a["rule"] == "DET-LATERAL-MOVEMENT")
     assert json.loads(move["detail"]["request_ids"]) == ["r-node-a-30", "r-node-b-31", "r-node-c-32"]
@@ -138,3 +148,27 @@ def test_exported_csv_parses(world):
     result = exp.run_export(sources, _change_register(), owners=OWNERS)
     from t4.detect.ingest import parse_events
     assert len(parse_events(result.csv())) == len(result.rows)
+
+
+def test_unverified_requests_are_never_attributed_to_the_named_actor(world):
+    _, sources = world
+    result = exp.run_export(sources, _change_register(), owners=OWNERS)
+    assert all(a.identity != "maya" for a in result.result.alerts)
+    forged = [a for a in result.result.alerts if a.identity == exp.UNVERIFIED_ACTOR]
+    assert len(forged) == 1 and forged[0].rule == "DET-LATERAL-MOVEMENT"
+    assert all(r["actor"] != "maya" for r in result.rows)
+
+
+def test_routine_admin_key_events_raise_no_alert(world):
+    _, sources = world
+    result = exp.run_export(sources, _change_register(), owners=OWNERS)
+    assert all(a.identity != "authority" for a in result.result.alerts)
+    enroll = next(r for r in result.rows if r["action"] == "enroll")
+    assert result.result.labels[enroll["event_id"]].label == "routine"
+
+
+def test_accepts_node_directory_with_log_subfolder(tmp_path):
+    (tmp_path / "log").mkdir()
+    (tmp_path / "log" / "audit.jsonl").write_bytes(b"")
+    assert exp.log_directory(tmp_path) == tmp_path / "log"
+    assert exp.log_directory(tmp_path / "log") == tmp_path / "log"

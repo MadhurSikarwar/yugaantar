@@ -58,6 +58,10 @@ GRANT_ACTIONS = frozenset({"grant", "grant_read"})
 UNGRANT_ACTIONS = frozenset({"ungrant", "revoke_grant", "remove_grant"})
 NO_ROLE = "user"
 AUTHORITY_SERVICE = "authority"
+UNVERIFIED_ACTOR = "(unverified)"
+# Key events other than grants are routine administration by the authority.
+ADMIN_ACTIONS = frozenset({"enroll", "rotate", "revoke_device", "revoke_actor"})
+LOG_SUBDIR = "log"
 
 
 class ExportError(Exception):
@@ -96,13 +100,19 @@ def read_role(asset: str) -> str:
     return f"read:{asset}"
 
 
+def log_directory(path: Path) -> Path:
+    """Accept a node or authority directory (log in ``<dir>/log``) or the log itself."""
+    path = Path(path)
+    return path / LOG_SUBDIR if (path / LOG_SUBDIR / "audit.jsonl").exists() else path
+
+
 def verify_sources(sources: Sequence[LogSource]) -> list[dict]:
     """Verify every log; raise ``ExportError`` naming the first that fails."""
     from t4.audit.verify import verify_log
 
     reports = []
     for source in sources:
-        report = verify_log(source.directory, dict(source.pinned_head) if source.pinned_head else None,
+        report = verify_log(log_directory(source.directory), dict(source.pinned_head) if source.pinned_head else None,
                             source.pinned_public_key)
         summary = {"log": source.name, "kind": source.kind, "ok": report.ok, "entries": report.entries,
                    "covered_seq": report.covered_seq, "head_pinned": report.head_pinned,
@@ -118,7 +128,7 @@ def _read_entries(source: LogSource) -> list[dict]:
     from t4.audit.log import AuditError, AuditLog
 
     try:
-        return AuditLog(source.directory, None).entries()
+        return AuditLog(log_directory(source.directory), None).entries()
     except AuditError as exc:
         raise ExportError(f"log {source.name} could not be read: {exc}") from None
 
@@ -178,13 +188,20 @@ def convert(node_logs: Mapping[str, Sequence[dict]], key_events: Sequence[dict],
         else:
             node_id = _detail(entry, "node_id") or log_name
             asset = entry["target"]
-            actor = entry["actor"]
             event_id = f"{node_id}#{entry['seq']}"
             device = _detail(entry, "device_id") or "no-device"
+            if entry.get("detail", {}).get("signature_verified") is True:
+                actor, source = entry["actor"], f"device:{device}"
+            else:
+                # The actor name is only a claim: never count it as that
+                # actor's activity, or anyone could get an innocent actor
+                # flagged. Unproven requests are grouped under one identity
+                # (session = claimed device) so probing is still visible.
+                actor, source = UNVERIFIED_ACTOR, f"claimed:{entry['actor']}"
             role = read_role(asset) if grants.get((actor, asset)) else NO_ROLE
             rows.append({
                 "event_id": event_id, "event_time_utc": ts, "received_time_utc": ts,
-                "source_clock_offset_ms": 0, "actor": actor, "source_service": f"device:{device}",
+                "source_clock_offset_ms": 0, "actor": actor, "source_service": source,
                 "target_service": f"{node_id}/{asset}", "action": entry["action"],
                 "role_before": role, "role_after": role, "outcome": entry["decision"],
                 "approval_id": "", "session_id": device, "correlation_id": entry.get("request_id", ""),
@@ -219,6 +236,8 @@ def export_config(baseline: Mapping[str, frozenset[str]], approvers: Iterable[st
         baseline=dict(baseline),
         role_scope={NO_ROLE: frozenset()},
         role_rank={NO_ROLE: 0},
+        # Enrol, rotate and revoke are expected authority actions, not edges.
+        session_actions=base.session_actions | ADMIN_ACTIONS,
         authorized_approvers=frozenset(approvers) if approvers is not None else base.authorized_approvers,
         review_same_session=False,
     )
@@ -256,6 +275,7 @@ def append_alerts(directory: Path, alerts: Sequence[engine.Alert], request_ids: 
     from t4.audit.log import AuditError, AuditLog, load_signer
 
     try:
+        directory = log_directory(directory)
         log = AuditLog(directory, load_signer(directory))
         present = {e["detail"].get("alert_id") for e in log.alerts()}
         appended = []
