@@ -349,3 +349,31 @@ def test_key_and_state_files_are_private(state_dir):
 
 def test_busy_error_type_is_exported():
     assert issubclass(StoreBusyError, Exception)
+
+
+def test_replace_retries_a_transient_windows_sharing_violation(tmp_path, monkeypatch):
+    from t4 import store as store_module
+
+    source, target = tmp_path / "a.tmp", tmp_path / "a"
+    source.write_bytes(b"x")
+    real, calls = store_module.os.replace, []
+
+    def flaky(src, dst):
+        calls.append(1)
+        if len(calls) < 3:
+            raise PermissionError("held open")
+        real(src, dst)
+
+    monkeypatch.setattr(store_module, "_IS_WINDOWS", True)
+    monkeypatch.setattr(store_module.os, "replace", flaky)
+    store_module._replace_with_retry(source, target)
+    assert target.read_bytes() == b"x" and len(calls) == 3
+
+
+def test_replace_does_not_retry_permission_errors_off_windows(tmp_path, monkeypatch):
+    from t4 import store as store_module
+
+    monkeypatch.setattr(store_module, "_IS_WINDOWS", False)
+    monkeypatch.setattr(store_module.os, "replace", lambda a, b: (_ for _ in ()).throw(PermissionError("no")))
+    with pytest.raises(PermissionError):
+        store_module._replace_with_retry(tmp_path / "x", tmp_path / "y")
