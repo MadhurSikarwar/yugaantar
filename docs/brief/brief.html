@@ -103,14 +103,14 @@ Run details and commands are in <code>docs/evidence-sheet.md</code>.</p>
 <li>Replayed, misdirected and forged requests and lists are rejected.</li>
 <li>Rotation and restore recover from a crash at every step, and revoked keys are never restored.</li>
 <li>Edits, deletions, reordering and truncation before a pinned head are detected, along with the first bad entry. Hostile text cannot forge entries.</li>
-<li>Our own logs are verified before the detector runs. Unverified requests are never attributed to the named actor.</li>
+<li>Our own logs are verified before the detector runs. In the detector, requests with unverified signatures, or forwarded or replayed copies, are never attributed to the named actor.</li>
 </ul>
 
 <h2>Exclusions and remaining risks</h2>
 <ul>
 <li><b>No caller authentication in the adapter.</b> Anyone can claim any actor.</li>
 <li>Whoever can write a directory can read its signing key and rebuild its log. A pin exposes this only up to the pinned entry. Entries after the newest checkpoint or pin can be cut unnoticed. A full rollback of a state directory is not detectable locally.</li>
-<li><b>Remaining after review fixes:</b> about 700,000 revocations of new names (measured at 72 bytes each) fill the state store, after which new revocations fail. Audit logs grow without limit (5 to 25 KB per hostile 4 KiB read). Log tampering is caught by an operator's <code>verify-log</code>, not by the running service. The authority does not authenticate its operator, including for rotation. Backups are not encrypted, and a restore loses newer enrolments and grants. An accepted list may be missing from a node log if the write fails.</li>
+<li><b>Remaining after review fixes:</b> about 700,000 revocations of new names (measured at 72 bytes each) fill the state store, after which new revocations fail. Audit logs grow without limit (5 to 25 KB per hostile 4 KiB read). The running service catches tampering only in recent log entries. Older edits need an operator's <code>verify-log</code>. The authority does not authenticate its operator, including for rotation. Backups are not encrypted, and a restore loses newer enrolments and grants. An accepted list may be missing from a node log if the write fails.</li>
 <li>No transport encryption and no forward secrecy (goals 9 to 12 are not supported). A reused <code>protected_read</code> challenge is accepted.</li>
 <li>The detector is measured only on synthetic data: 22 practice rows cannot establish accuracy, and the held-out set reflects our own assumptions. Linux was tested locally and in Docker, not on the organizer sandbox. A state folder we own is made private (0700). In a shared folder like /tmp, we use our own subfolder.</li>
 </ul>

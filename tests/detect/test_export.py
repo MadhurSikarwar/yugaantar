@@ -200,3 +200,21 @@ def test_over_long_identifiers_do_not_break_the_export(world):
     # Two different over-long values stay distinct after fitting.
     assert exp.fit_field("x" * 5000 + "1") != exp.fit_field("x" * 5000 + "2")
     assert exp.fit_field("short") == "short"
+
+
+def test_forwarded_or_replayed_signed_requests_are_not_pinned_on_the_signer(world):
+    """c3-to-c4-002: a captured genuine request forwarded to other nodes is denied
+    (NODE-WRONG-NODE) with a valid signature; it must not frame its signer."""
+    dirs, sources = world
+    for at, node, rule in ((200, "node-b", "NODE-WRONG-NODE"), (201, "node-c", "NODE-WRONG-NODE"),
+                           (202, "node-a", "NODE-REPLAY")):
+        log = AuditLog(dirs[node], load_or_create_signer(dirs[node]))
+        log.append(actor="alice", action="read", target="file-carol", decision="deny", rule=rule,
+                   request_id=f"fwd-{at}",
+                   detail={"node_id": node, "device_id": "dev-alice", "signature_verified": True})
+        log.head()
+    result = exp.run_export(sources, _change_register(), owners=OWNERS)
+    assert all(a.identity != "alice" for a in result.result.alerts)
+    forwarded = [r for r in result.rows if r["correlation_id"].startswith("fwd-")]
+    assert len(forwarded) == 3
+    assert all(r["actor"] == exp.UNVERIFIED_ACTOR and r["source_service"] == "forwarded:alice" for r in forwarded)
