@@ -30,6 +30,13 @@ def text(request, name):
     return value
 
 
+def key(identifier):
+    """Fixed-size form of an identifier, so long ones do not bloat the state."""
+    if FLAW == "raw-index":
+        return identifier
+    return hashlib.sha256(identifier.encode("utf-8")).hexdigest()
+
+
 def save(state, data):
     body = json.dumps(data, sort_keys=True).encode()
     tag = hmac.new((state / "state.key").read_bytes(), body, hashlib.sha256).hexdigest()
@@ -56,15 +63,15 @@ def handle(request, state, log):
         if not (state / "state.key").exists():
             (state / "state.key").write_bytes(secrets.token_bytes(32))
         generation = secrets.token_hex(8)
-        save(state, {"owners": owners, "contents": contents, "disabled": disabled,
-                     "generation": generation})
+        save(state, {"owners": owners, "contents": contents,
+                     "disabled": [key(actor) for actor in disabled], "generation": generation})
         log.append(actor="", action="setup", target="", decision="info", rule="SETUP", request_id="")
         return {"ready": True}
     data = load(state)
     generation = data["generation"]
     if op == "revoke":
         actor = text(request, "actor")
-        data["disabled"].append(actor)
+        data["disabled"].append(key(actor))
         save(state, data)
         log.append(actor=actor, action="revoke", target="", decision="info", rule="REVOKE", request_id="")
         return {}
@@ -78,7 +85,10 @@ def handle(request, state, log):
         return {"error": "unsupported_operation"}
     actor, asset = text(request, "actor"), text(request, "asset")
     request_id = text(request, "request_id") if op == "read" else secrets.token_hex(16)
-    allowed = data["owners"].get(asset) == actor and (actor not in data["disabled"] or FLAW == "ignore-revoke")
+    allowed = data["owners"].get(asset) == actor and (key(actor) not in data["disabled"] or FLAW == "ignore-revoke")
+    if FLAW == "raw-index" and op == "read":  # the defect found in review: keep caller text as sent
+        data.setdefault("seen", []).append(request_id)
+        save(state, data)
     response = {"decision": "deny"}
     if allowed and op == "read":
         response = {"decision": "allow", "body": data["contents"][asset]}

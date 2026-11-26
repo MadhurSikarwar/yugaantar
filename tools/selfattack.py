@@ -334,6 +334,67 @@ class Suite:
             ok = reply.code == 0 and s.owner_reads()
             self.check("opaque identifiers work as real owners", ok, "medium",
                        "unusual but valid identifiers were rejected")
+        self.identifier_flood()
+
+    def identifier_flood(self, count: int = 20) -> None:
+        """Long identifiers must cost a small, fixed amount of state (c1 review finding 1).
+
+        Before the fix one such read added about 24 KB, so a few thousand of them
+        pushed the state past its load limit and disabled every call, including
+        ``revoke``. Measured through the adapter, so it holds however the service
+        keys its records. The audit log is excluded: it is meant to grow.
+        """
+        filler = "\x01" * 4090  # one byte each on input, six once escaped as JSON
+        limit = 1024  # bytes of state allowed per request
+
+        def state_size(scene: Scenario) -> int:
+            return sum(p.stat().st_size for p in scene.state.rglob("*")
+                       if p.is_file() and p.name not in AUDIT_FILES and p.suffix not in (".tmp", ".lock"))
+
+        with self.scenario() as s:
+            s.read(request_id="warm-up")
+            before = state_size(s)
+            for number in range(count):
+                s.read(actor=f"{filler}a{number:05d}", request_id=f"{filler}r{number:05d}")
+            per_read = (state_size(s) - before) / count
+            self.check("flood: long identifiers in reads cost little state", per_read < limit, "high",
+                       f"about {per_read:.0f} bytes of state per read")
+            before = state_size(s)
+            revokes = [s.revoke(f"{filler}v{number:05d}") for number in range(count)]
+            per_revoke = (state_size(s) - before) / count
+            self.check("flood: long identifiers in revocations cost little state", per_revoke < limit, "high",
+                       f"about {per_revoke:.0f} bytes of state per revoke")
+            self.check("flood: every revoke succeeded", all(r.code == 0 for r in revokes), "high",
+                       "a revoke failed")
+            raw = (b"\\u0001" * 8, b"\x01" * 8)
+            stored = [p.name for p in s.state.rglob("*")
+                      if p.is_file() and p.name not in AUDIT_FILES and any(f in p.read_bytes() for f in raw)]
+            self.check("flood: raw identifiers are not kept in state", not stored, "medium",
+                       "an unauthenticated caller's identifier is stored as sent")
+            allowed_id, denied_id = f"{filler}own-a", f"{filler}own-b"  # differ only in the last character
+            s.read(request_id=allowed_id)
+            s.read(actor="eve", request_id=denied_id)
+            for request_id, expected in ((allowed_id, "allow"), (denied_id, "deny")):
+                data = s.audit(request_id).data or {}
+                self.check(f"flood: audit still resolves a long request id ({expected})",
+                           data.get("decision") == expected and data.get("request_id") == request_id,
+                           "high", "wrong or missing audit record")
+            self.check("flood: owner is still served", s.owner_reads(), "high", "owner can no longer read")
+            self.check("flood: owner can still be revoked", s.revoke().code == 0 and s.read().denied,
+                       "critical", "revocation failed after the flood")
+            self.check("flood: peer unaffected", s.read(actor=s.peer, asset=s.other).allowed, "high",
+                       "peer lost access")
+        with self.scenario(ready=False) as s:
+            s.owner, s.peer = f"{filler[:4080]}owner-1", f"{filler[:4080]}owner-2"  # under the 4 KiB cap
+            ready = s.setup()
+            self.check("flood: long identifiers are accepted as owners", ready.code == 0, "medium",
+                       "setup rejected identifiers under 4 KiB")
+            before_revoke = s.owner_reads()
+            s.revoke()
+            self.check("flood: revoking a long identifier takes effect", before_revoke and s.read().denied,
+                       "critical", "revoked owner still served")
+            self.check("flood: a nearly identical identifier is not revoked",
+                       s.read(actor=s.peer, asset=s.other).allowed, "high", "the wrong owner lost access")
 
     # ---- item 3: log injection ----------------------------------------------------
 

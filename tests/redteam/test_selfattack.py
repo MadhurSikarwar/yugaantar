@@ -53,6 +53,14 @@ def test_content_leak_in_a_denial_is_critical(double, monkeypatch):
     assert any("denial" in r.name for r in found)
 
 
+def test_state_keyed_by_raw_identifiers_is_reported(double, monkeypatch):
+    monkeypatch.setenv("DOUBLE_FLAW", "raw-index")
+    names = {r.name for r in failures(double, [2])}
+    assert {"flood: long identifiers in reads cost little state",
+            "flood: long identifiers in revocations cost little state",
+            "flood: raw identifiers are not kept in state"} <= names
+
+
 def test_unsafe_code_is_reported(double):
     source = double.parent / "t4" / "unsafe.py"
     source.write_text("import pickle\nimport os\nos.system('x')\neval('1')\n", encoding="utf-8")
