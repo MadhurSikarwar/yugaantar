@@ -13,9 +13,10 @@ Report text never contains request bodies, service output or secret values.
 
 Exit status: 0 no failures, 1 at least one failure, 2 the suite could not run.
 
-Not covered: items 6 (node part), 9 and 10 need the node, rotation and backup
-commands; they are reported as SKIP. A PASS means these probes found nothing, not
-that the service is secure.
+Items 6 (node part), 9 and 10 drive the node, rotation and backup commands and are
+reported as SKIP where those are absent. Rotation is interrupted by exiting the
+process at each step. A PASS means these probes found nothing, not that the
+service is secure.
 """
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -138,6 +140,72 @@ class Scenario:
     def audit_directory(self) -> Path | None:
         found = sorted(self.state.rglob("audit.jsonl"))
         return found[0].parent if found else None
+
+
+class NodeWorld:
+    """A fresh authority, two enrolled devices and one node, all in a temporary directory."""
+
+    def __init__(self, suite: "Suite", freshness: float = 60.0, vault: bool = False) -> None:
+        self.suite, self.freshness, self.vault = suite, freshness, vault
+        self.count = 0
+
+    def __enter__(self) -> "NodeWorld":
+        self.folder = tempfile.TemporaryDirectory(prefix="t4-node-", ignore_cleanup_errors=True)
+        root = Path(self.folder.name)
+        self.root, self.authority, self.node = root, root / "authority", root / "node-a"
+        self.keys, self.backups = root / "vault-keys", root / "vault-backups"
+        extra = ["--vault-keys", self.keys, "--vault-backups", self.backups] if self.vault else []
+        self.run("init-authority", "--authority", self.authority, "--freshness", self.freshness,
+                 "--skew", 0.5, *extra)
+        self.maya = self.new_device("maya", "dev-maya")
+        self.noor = self.new_device("noor", "dev-noor")
+        data = root / "data.json"
+        data.write_text(json.dumps({
+            "owners": {"brief": "maya", "memo": "noor"},
+            "contents": {"brief": secrets.token_hex(16), "memo": secrets.token_hex(16)},
+        }), encoding="utf-8")
+        self.run("provision-node", "--node", self.node, "--authority", self.authority,
+                 "--node-id", "node-a", "--data", data)
+        self.deliver(self.issue("start"))
+        return self
+
+    def __exit__(self, *_error: object) -> None:
+        self.folder.cleanup()
+
+    def run(self, *arguments: object) -> dict:
+        code, data = self.suite.command("t4.node.cli", *arguments)
+        if code != 0:
+            raise RuntimeError(f"node command '{arguments[0]}' failed with {code}")
+        return data
+
+    def new_device(self, owner: str, device_id: str) -> Path:
+        folder = self.root / device_id
+        self.run("init-device", "--device", folder, "--device-id", device_id, "--owner", owner)
+        self.run("enroll", "--authority", self.authority, "--device", folder)
+        return folder
+
+    def issue(self, label: str) -> Path:
+        out = self.root / f"list-{label}.json"
+        self.run("issue-list", "--authority", self.authority, "--out", out)
+        return out
+
+    def deliver(self, signed_list: Path) -> bool | None:
+        return self.run("deliver", "--node", self.node, "--list", signed_list).get("accepted")
+
+    def request(self, device: Path, node_id: str, asset: str = "brief") -> Path:
+        self.count += 1
+        out = self.root / f"request-{self.count}.json"
+        code, _data = self.suite.command("t4.node.cli", "request", "--device", device, "--node-id", node_id,
+                                         "--asset", asset, "--out", out)
+        if code != 0:
+            raise RuntimeError("device could not sign a request")
+        return out
+
+    def handle(self, request: Path) -> dict:
+        return self.run("handle", "--node", self.node, "--request", request)
+
+    def denied(self, request: Path) -> bool:
+        return self.handle(request) == {"decision": "deny"}
 
 
 class Suite:
@@ -388,7 +456,171 @@ class Suite:
 
                 self.check("audit chain still verifies after second setup",
                            AuditLog(folder, None).verify().ok, "high", "chain broke")
-        self.note("SKIP", "node replay, wrong node, stale or forged list", "needs the node layer commands (c3)")
+        if not self.has("t4/node/cli.py"):
+            return self.note("SKIP", "node replay, wrong node, stale or forged list",
+                             "needs the node layer commands (c3)")
+        self.node_attacks()
+
+    # ---- node layer, rotation and backup (c3's commands) -------------------------
+
+    def has(self, relative: str) -> bool:
+        return (self.entry.parent / relative).is_file()
+
+    def command(self, module: str, *arguments: object) -> tuple[int | None, dict]:
+        """Run one of our own command line tools next to the adapter."""
+        try:
+            done = subprocess.run(
+                [sys.executable, "-B", "-m", module, *map(str, arguments)], cwd=self.entry.parent,
+                capture_output=True, timeout=60,
+            )
+        except subprocess.TimeoutExpired:
+            return None, {}
+        try:
+            data = json.loads(done.stdout)
+        except (ValueError, UnicodeError):
+            data = {}
+        return done.returncode, data if isinstance(data, dict) else {}
+
+    def node_attacks(self) -> None:
+        with NodeWorld(self) as w:
+            first = w.request(w.maya, "node-a")
+            self.check("enrolled owner is allowed on a node", w.handle(first).get("decision") == "allow",
+                       "high", "legitimate request denied")
+            self.check("replayed request is denied", w.denied(first), "critical", "replay accepted")
+            elsewhere = w.request(w.maya, "node-b")
+            self.check("request for another node is denied", w.denied(elsewhere), "high", "accepted")
+            for field_name, value in (("asset", "memo"), ("actor", "noor"), ("nonce", "0" * 32)):
+                altered = w.request(w.maya, "node-a")
+                document = json.loads(altered.read_text(encoding="utf-8"))
+                document["body"][field_name] = value
+                altered.write_text(json.dumps(document), encoding="utf-8")
+                self.check(f"altered {field_name} is denied", w.denied(altered), "critical", "accepted")
+            self.check("another device cannot read the owner's asset", w.denied(w.request(w.noor, "node-a")),
+                       "critical", "cross-owner read")
+            old_list = w.issue("old")
+            w.deliver(w.issue("new"))
+            self.check("older list is rejected", w.deliver(old_list) is False, "high", "rollback accepted")
+            forged = w.issue("forged")
+            document = json.loads(forged.read_text(encoding="utf-8"))
+            document["body"]["grants"] = [{"actor": "noor", "asset": "brief", "approval_id": "x"}]
+            document["body"]["seq"] += 10
+            forged.write_text(json.dumps(document), encoding="utf-8")
+            self.check("forged list is rejected", w.deliver(forged) is False, "critical", "forgery accepted")
+            w.run("revoke-device", "--authority", w.authority, "--device-id", "dev-maya")
+            w.deliver(w.issue("revoked"))
+            self.check("revoked device is denied", w.denied(w.request(w.maya, "node-a")), "critical",
+                       "revoked device served")
+            self.check("peer is unaffected",
+                       w.handle(w.request(w.noor, "node-a", "memo")).get("decision") == "allow", "high",
+                       "peer lost access")
+            replacement = w.new_device("maya", "dev-maya-2")
+            w.deliver(w.issue("enrolled"))
+            self.check("owner can re-enrol a new device",
+                       w.handle(w.request(replacement, "node-a")).get("decision") == "allow", "high",
+                       "re-enrolment failed")
+            code, report = self.command("t4.audit.cli", "--dir", w.node / "log", "verify-log")
+            self.check("node log verifies", code == 0 and report.get("ok") is True, "high", "verification failed")
+        with NodeWorld(self, freshness=3.0) as w:
+            fresh = w.issue("fresh")
+            w.deliver(fresh)
+            late = w.issue("late")
+            time.sleep(4.0)
+            self.check("stale node denies even a valid request", w.denied(w.request(w.maya, "node-a")),
+                       "critical", "served with an expired list")
+            self.check("expired list is rejected", w.deliver(late) is False, "high", "expired list accepted")
+
+    # ---- item 9: rotation interrupted at every step ------------------------------
+
+    def item_9(self) -> None:
+        if not (self.has("t4/rotation.py") and self.has("t4/node/cli.py")):
+            return self.note("SKIP", "rotation kill-points", "needs the rotation command (c3)")
+        child = (
+            "import os, sys, time; sys.path.insert(0, '.')\n"
+            "from t4.node.cli import authority_at\n"
+            "from t4.node.common import load_signer\n"
+            "from t4.node.device import Device\n"
+            "def fault(step):\n"
+            "    if step == sys.argv[3]: os._exit(9)\n"
+            "now = time.time()\n"
+            "Device(sys.argv[2], load_signer()).rotate(authority_at(sys.argv[1]), now, now + 5.0, fault)\n"
+        )
+        for step in ("prepared", "committed", "applied", "published", "acknowledged"):
+            with NodeWorld(self, freshness=3.0) as w:
+                done = subprocess.run(
+                    [sys.executable, "-B", "-c", child, str(w.authority), str(w.maya), step],
+                    cwd=self.entry.parent, capture_output=True, timeout=60)
+                if done.returncode != 9:
+                    self.check(f"kill after '{step}' could be injected", False, "medium",
+                               f"child exited with {done.returncode}")
+                    continue
+                w.deliver(w.issue("after-crash"))
+                self.check(f"after '{step}': owner still has a usable key",
+                           w.handle(w.request(w.maya, "node-a")).get("decision") == "allow", "high",
+                           "device cannot sign or node refuses")
+                code, _data = self.command("t4.cli", "rotate", "--authority", w.authority,
+                                           "--device", w.maya, "--lead", 5)
+                self.check(f"after '{step}': rotation can be finished or is already complete",
+                           code in (0, 1), "medium", "rotation command crashed or hung")
+                time.sleep(5.5)
+                w.deliver(w.issue("after-cutoff"))
+                self.check(f"after '{step}': access works after the cutoff",
+                           w.handle(w.request(w.maya, "node-a")).get("decision") == "allow", "high",
+                           "no consistent key after activation")
+                w.run("revoke-device", "--authority", w.authority, "--device-id", "dev-maya")
+                w.deliver(w.issue("revoked"))
+                self.check(f"after '{step}': revocation still holds",
+                           w.denied(w.request(w.maya, "node-a")), "critical", "revoked device served")
+
+    # ---- item 10: backups ---------------------------------------------------------
+
+    def item_10(self) -> None:
+        if not (self.has("t4/backup.py") and self.has("t4/cli.py")):
+            return self.note("SKIP", "corrupted backup", "needs the backup commands (c3)")
+        with NodeWorld(self, vault=True) as w:
+            vault = ("--vault-keys", w.keys, "--vault-backups", w.backups, "--kind", "authority")
+
+            def restore() -> tuple[int | None, dict]:
+                return self.command("t4.cli", "restore", "--target", w.authority, *vault)
+
+            for _ in range(2):
+                code, _data = self.command("t4.cli", "backup", "--source", w.authority, *vault)
+                self.check("backup succeeds", code == 0, "high", "backup failed")
+            files = sorted(w.backups.glob("backup-*.json"))
+            if len(files) < 2:
+                return self.check("two backups exist", False, "high", "backup files not found")
+            w.run("revoke-device", "--authority", w.authority, "--device-id", "dev-maya")
+            newest = bytearray(files[-1].read_bytes())
+            newest[len(newest) // 2] ^= 1
+            files[-1].write_bytes(bytes(newest))
+            code, data = restore()
+            self.check("damaged backup is reported and an older one used",
+                       code == 2 and any(files[-1].name in d for d in data.get("damaged", [])), "high",
+                       "damage was not reported")
+            w.deliver(w.issue("restored"))
+            self.check("restore does not bring back a revoked device",
+                       w.denied(w.request(w.maya, "node-a")), "critical", "revocation was rolled back")
+            self.check("restored authority still serves the peer",
+                       w.handle(w.request(w.noor, "node-a", "memo")).get("decision") == "allow", "high",
+                       "peer lost access")
+            for path in w.authority.glob("state.*"):
+                path.write_bytes(b"destroyed")
+            code, _data = restore()
+            accepted = code in (0, 2) and w.deliver(w.issue("recovered")) is True
+            self.check("recovery after losing the live state yields lists nodes accept", accepted, "high",
+                       "restore failed or nodes reject the new list")
+            self.check("revocation survives recovery from total loss",
+                       w.denied(w.request(w.maya, "node-a")), "critical", "revocation was rolled back")
+            before = {p.name: p.read_bytes() for p in w.authority.glob("state.*")}
+            for path in files:
+                path.write_bytes(path.read_bytes()[:20])
+            code, _data = restore()
+            after = {p.name: p.read_bytes() for p in w.authority.glob("state.*")}
+            self.check("restore refuses when every backup is damaged", code == 1 and before == after, "high",
+                       "unverified material was used")
+            code, _data = self.command("t4.cli", "init-vault", "--vault-keys", w.backups / "k",
+                                       "--vault-backups", w.backups, "--subject", "authority")
+            self.check("verification key cannot be stored inside the backups", code == 1, "medium",
+                       "accepted")
 
     # ---- item 7: revoked and disabled actors ------------------------------------
 
@@ -585,13 +817,8 @@ class Suite:
     def execute(self, items: list[int]) -> list[Result]:
         for number in items:
             self.item = number
-            method = getattr(self, f"item_{number}", None)
-            if method is None:
-                self.note("SKIP", "rotation kill-points" if number == 9 else "corrupted backup",
-                          "needs the rotation and backup commands (c3)")
-                continue
             try:
-                method()
+                getattr(self, f"item_{number}")()
             except Exception as error:  # one broken item must not hide the others
                 self.results.append(Result(number, "item could not complete", "FAIL", "high",
                                            f"{type(error).__name__}: {str(error)[:120]}"))
