@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Trust, but verify: project brief</title>
+<style>
+  @page { size: A4; margin: 14mm 15mm; }
+  * { box-sizing: border-box; }
+  body { font-family: "Segoe UI", Arial, sans-serif; font-size: 9.6pt; line-height: 1.36; color: #111; margin: 0; }
+  h1 { font-size: 15pt; margin: 0 0 2mm; }
+  h2 { font-size: 11pt; margin: 3.2mm 0 1.2mm; border-bottom: 1px solid #999; padding-bottom: 0.6mm; }
+  p { margin: 0 0 1.6mm; }
+  ul { margin: 0 0 1.6mm; padding-left: 5mm; }
+  li { margin: 0 0 0.6mm; }
+  .meta { font-size: 9pt; margin-bottom: 1mm; }
+  .meta td { padding: 0 4mm 0.4mm 0; vertical-align: top; }
+  pre { font-family: Consolas, monospace; font-size: 7.6pt; line-height: 1.25; background: #f3f3f3; padding: 1.6mm 2mm; margin: 0 0 1.6mm; white-space: pre; }
+  code { font-family: Consolas, monospace; font-size: 8.6pt; }
+  table.t { border-collapse: collapse; width: 100%; font-size: 8.6pt; margin-bottom: 1.6mm; }
+  table.t td, table.t th { border: 1px solid #bbb; padding: 0.6mm 1.4mm; vertical-align: top; text-align: left; }
+  table.t th { background: #eee; }
+  .page { page-break-after: always; break-after: page; }
+  .page:last-child { page-break-after: auto; break-after: auto; }
+  .todo { background: #fff3a0; }
+</style>
+</head>
+<body>
+
+<section class="page">
+<h1>Trust, but verify: post-quantum protected files with verifiable decisions</h1>
+<table class="meta">
+<tr><td><b>Project</b></td><td>Track 4, Yugaantar DevForge</td><td><b>Team</b></td><td class="todo">[team name and members]</td></tr>
+<tr><td><b>Repository</b></td><td>https://github.com/MadhurSikarwar/yugaantar</td><td><b>Commit</b></td><td class="todo">[final tag hash]</td></tr>
+<tr><td><b>Demo entry point</b></td><td colspan="3"><code>python demo/run_demo.py</code> (one command, synthetic data; see README)</td></tr>
+</table>
+
+<h2>Unique selling proposition</h2>
+<p>When a device is lost, operators need to cut it off everywhere and later <b>prove</b> what happened. In our service every allow, deny and alert is logged with the rule and the events behind it, and anyone holding a pinned checkpoint and the public key can verify that the log up to that point has not been altered. Revocation reaches every honest node within a stated, measured bound, and a node that cannot get fresh revocation data locks itself instead of guessing. Our own signed logs feed an explainable rules-based detector, and every limit is written down.</p>
+
+<h2>Architecture</h2>
+<pre>caller ─JSON─▶ track4_service.py ─▶ validate_in ─▶ policy (owner / disabled / revoked) ─▶ reply
+                 │ new process per request    store: locked, atomic, HMAC-tagged state
+                 │                            audit: SHA-256 hash chain + ML-DSA-65 checkpoints
+                 └ protected_read: ML-KEM-768 encapsulation, proof = HMAC-SHA256(secret, challenge‖body)
+authority ─signed revocation lists via untrusted courier─▶ node A, B, C   (deny all if list older than T)
+device ─ML-DSA-65 signed request─▶ node: signature, node binding, owner, key version, window, nonce, policy
+operator: verify-log (pinned head + key) · explain · detector over our own verified logs · backup/restore</pre>
+<ul>
+<li><b>Identity and authorization.</b> The judged adapter enforces permissions on the stated <code>actor</code>. The contract carries no credential, so it does not authenticate callers. Device identity is verified in the node layer by ML-DSA-65 signatures.</li>
+<li><b>Keys.</b> These are generated at runtime and never stored in the repository. The adapter's audit key and the authority and device keys are ML-DSA-65. Key rotation is journalled (PREPARED, then COMMITTED) with activation time C more than T + s ahead and no grace period. Backups are HMAC-authenticated.</li>
+<li><b>Libraries.</b> <code>pqcrypto==0.4.0</code> (ML-KEM-768, ML-DSA-65) and the Python standard library (HMAC, SHA-256). No custom crypto, no ML.</li>
+<li><b>Working:</b> all five operations, the node layer, rotation, backup, signed logs, the detector, the red-team suite and the simulation. <b>Not built:</b> encrypted messaging (goals 9 to 12).</li>
+</ul>
+
+<h2>Five-minute fallback video</h2>
+<p><b>Video link:</b> <span class="todo">[public URL]</span> &nbsp; <b>Duration:</b> 5 minutes &nbsp; <b>Access checked:</b> <span class="todo">[date, opened while logged out]</span></p>
+
+<p><b>Observed outcome.</b> These results are from a local merge run on 2026-11-26, Windows, Python 3.13, <code>pqcrypto</code> 0.4.0.
+<ul>
+<li>The official validator exits 0, and 541 tests pass.</li>
+<li>Our PRD section 8 red-team suite: 239 checks passed, 0 failed.</li>
+<li>Simulated revocation across 4 nodes: last-node enforcement at most 50 s against a 62 s bound (r + T + s), 0 violations.</li>
+<li>Cold-process latency: p50 170 to 181 ms and p95 at most 280 ms per operation.</li>
+<li>Detector: 22/22 practice events correct. On 12,060 held-out generated events, 95.3% of labels are correct, with 11 false alerts per 1,000 benign events.</li>
+</ul>
+Evidence and commands are in <code>docs/evidence-sheet.md</code>.</p>
+</section>
+
+<section class="page">
+<h1>One-page threat model</h1>
+
+<h2>Assets</h2>
+<p>File bodies (confidentiality). Owners, revocations and grants (integrity, and no rollback once acknowledged). Audit logs (tamper evidence). Signing and state keys (secrecy). Service availability for legitimate owners.</p>
+
+<h2>Adversaries</h2>
+<ul>
+<li>An unauthorized caller who can send any JSON and claim any actor.</li>
+<li>Whoever holds a lost or stolen device and its key.</li>
+<li>A network or courier that delays, drops, replays or alters messages.</li>
+<li>A log injector who uses hostile identifier text.</li>
+<li>A local attacker with write access to a state directory.</li>
+</ul>
+
+<h2>Trust boundaries</h2>
+<table class="t">
+<tr><th>Boundary</th><th>What is checked</th></tr>
+<tr><td>Caller → adapter</td><td>Permission only: owner, not disabled, not revoked. The identity is claimed, not proven.</td></tr>
+<tr><td>Device → node</td><td>ML-DSA signature, node binding, owner = actor, active key version, time window, single-use nonce, then policy</td></tr>
+<tr><td>Authority → node</td><td>Signed, numbered list. Older or forged lists are rejected. If the list is older than T, the node denies all.</td></tr>
+<tr><td>Process → disk</td><td>HMAC-tagged state, atomic writes, hash-chained signed logs. The keys share the directory.</td></tr>
+<tr><td>Operator → outside</td><td>A pinned log head and public key, kept outside the directory</td></tr>
+</table>
+
+<h2>Assumptions</h2>
+<p>The adapter's caller states the true actor. Node clocks are within s = 2 s. The authority and nodes are not compromised. <code>pqcrypto</code> is correct. Pins are stored elsewhere.</p>
+
+<h2>Defenses (each tested; see the evidence sheet)</h2>
+<ul>
+<li>Deny by default, with a uniform deny response. Revocation is persisted before the reply, and peers are unaffected.</li>
+<li>Strict input checks give a generic error and no traceback.</li>
+<li>Revocation is enforced on every honest node by r + T + s. Stale nodes lock.</li>
+<li>Replayed, misdirected and forged requests and lists are rejected.</li>
+<li>Rotation and restore recover from a crash at every step, and revoked keys are never restored.</li>
+<li>Edits, deletions, reordering and truncation before a pinned head are detected, along with the first bad entry. Hostile text cannot forge entries.</li>
+<li>Our own logs are verified before the detector runs. Unverified requests are never attributed to the named actor.</li>
+</ul>
+
+<h2>Exclusions and remaining risks</h2>
+<ul>
+<li><b>No caller authentication in the adapter.</b> Anyone can claim any actor.</li>
+<li>Whoever can write a directory can read its signing key and rebuild its log. A pin exposes this only up to the pinned entry. Entries after the newest checkpoint or pin can be cut unnoticed. A full rollback of a state directory is not detectable locally.</li>
+<li><b>Open review findings:</b> long identifiers can grow the state file until every call fails (high, open). The authority does not authenticate its operator, including for rotation. Backups are not encrypted, and a restore loses newer enrolments and grants.</li>
+<li>No transport encryption and no forward secrecy (goals 9 to 12 are not supported). A reused <code>protected_read</code> challenge is accepted.</li>
+<li>The detector is measured only on synthetic data: 22 practice rows cannot establish accuracy, and the held-out set reflects our own assumptions. Not yet run on Linux.</li>
+</ul>
+<p><b>Largest remaining risk:</b> the adapter cannot tell who is calling. Strong identity exists only where devices sign their requests.</p>
+</section>
+
+</body>
+</html>
