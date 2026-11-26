@@ -18,7 +18,11 @@ SPEC.loader.exec_module(attack)
 def double(tmp_path, monkeypatch):
     """A copy of the test double in its own directory, with the real t4 packages."""
     shutil.copyfile(ROOT / "tests" / "redteam" / "double_service.py", tmp_path / "track4_service.py")
-    shutil.copytree(ROOT / "t4", tmp_path / "t4", ignore=shutil.ignore_patterns("__pycache__"))
+    # Only the packages the double uses, so teammates' modules in a merged tree do
+    # not change what these tests exercise.
+    for package in ("crypto", "audit"):
+        shutil.copytree(ROOT / "t4" / package, tmp_path / "t4" / package,
+                        ignore=shutil.ignore_patterns("__pycache__"))
     monkeypatch.setenv("DOUBLE_REPO", str(tmp_path))
     monkeypatch.delenv("DOUBLE_FLAW", raising=False)
     return tmp_path / "track4_service.py"
