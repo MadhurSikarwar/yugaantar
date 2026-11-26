@@ -48,8 +48,8 @@ operator: verify-log (pinned head + key) · explain · detector over our own ver
 <ul>
 <li><b>Identity and authorization.</b> The judged adapter enforces permissions on the stated <code>actor</code>. The contract carries no credential, so it does not authenticate callers. Device identity is verified in the node layer by ML-DSA-65 signatures.</li>
 <li><b>Keys.</b> These are generated at runtime and never stored in the repository. The adapter's audit key and the authority and device keys are ML-DSA-65. Key rotation is journalled (PREPARED, then COMMITTED) with activation time C more than T + s ahead and no grace period. Backups are HMAC-authenticated.</li>
-<li><b>Libraries.</b> <code>pqcrypto==0.4.0</code> (ML-KEM-768, ML-DSA-65) and the Python standard library (HMAC, SHA-256). No custom crypto, no ML.</li>
-<li><b>Working:</b> all five operations, the node layer, rotation, backup, signed logs, the detector, the red-team suite and the simulation. <b>Not built:</b> encrypted messaging (goals 9 to 12).</li>
+<li><b>Libraries.</b> <code>pqcrypto==0.4.0</code> (ML-KEM-768, ML-DSA-65) and the Python standard library (HMAC, SHA-256). No custom crypto, no ML. The demo-only messaging adds the vetted <code>cryptography</code> package.</li>
+<li><b>Working:</b> all five operations, the node layer, rotation, backup, signed logs, the detector, the red-team suite and the simulation. <b>Demo layer only:</b> encrypted messaging (ML-KEM + ML-DSA + vetted ChaCha20-Poly1305, replay and recipient checks, not forward secret). The judged service does not support goals 9 to 12.</li>
 </ul>
 
 <h2>Five-minute fallback video</h2>

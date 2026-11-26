@@ -24,7 +24,7 @@ Yugaantar DevForge, Track 4. A protected-file service for the lost-device case:
 
 ## Setup on a clean machine
 
-Requirements: **Python 3.12** and Git. The runtime dependencies are `pqcrypto==0.4.0`, plus `cffi` and `pycparser`, which it pulls in (`requirements.txt`). Development needs only `pytest` (`requirements-dev.txt`). The runtime uses nothing else outside the standard library and makes no network calls.
+Requirements: **Python 3.12** and Git. The runtime dependencies are `pqcrypto==0.4.0`, plus `cffi` and `pycparser`, which it pulls in (`requirements.txt`). Development needs only `pytest` (`requirements-dev.txt`). The runtime uses nothing else outside the standard library and makes no network calls. **Optional, demo only:** `demo/messaging.py` needs the vetted `cryptography` package (`requirements-demo.txt`). The judged adapter and `t4/` never import it.
 
 ```sh
 git clone https://github.com/MadhurSikarwar/yugaantar.git
@@ -73,6 +73,7 @@ Each line is a command, and each result has been reproduced (see `docs/evidence-
 | Detector on held-out generated events | `python tools/gen_logs.py --out <dir> --held-out`, then `python -m t4.detect.cli evaluate --dir <dir>` |
 | Alerts from our own signed logs | `python -m t4.detect.cli export --node node-a=<dir> ... --authority <dir> --approvals <file> --owners <file> --append-alerts <dir>` (`demo/run_demo.py` does this end to end) |
 | Latency per operation (cold process) | `python tools/bench.py` |
+| Demo-layer messaging refuses replays, wrong recipients and any changed field | `pip install -r requirements-demo.txt`, then `python -m pytest tests/unit/test_demo_messaging.py -q` |
 
 ## Limits (short version)
 
@@ -88,5 +89,5 @@ The full list is in `docs/threat-model.md`.
 ## Attribution
 
 - `track4_service.py` is based on the Python starter adapter of the official **Track 4 participant toolkit** (https://github.com/ScalerOpenSourceLabs/Track-4-Toolkit, commit `8901dfb`). It keeps the starter's structure: one JSON object in, `json.dumps(..., allow_nan=False)` out, a generic stderr line and exit 1 on failure. It adds a size-capped strict UTF-8 read of stdin, ASCII output and failure recording. The evidence-sheet and two-page brief structure follow the toolkit's `templates/`. `tests/detect/data/practice/` contains unchanged copies of the toolkit's synthetic practice files. The toolkit's demo application logic was **not** copied.
-- **pqcrypto 0.4.0** (https://pypi.org/project/pqcrypto/) provides ML-KEM-768 (FIPS 203) and ML-DSA-65 (FIPS 204). **cffi** and **pycparser** are its dependencies. **pytest** is used for tests only.
+- **pqcrypto 0.4.0** (https://pypi.org/project/pqcrypto/) provides ML-KEM-768 (FIPS 203) and ML-DSA-65 (FIPS 204). **cffi** and **pycparser** are its dependencies. **pytest** is used for tests only. **cryptography** (https://cryptography.io, Apache-2.0 or BSD-3-Clause) provides ChaCha20-Poly1305 and HKDF for the optional `demo/messaging.py` only.
 - Standard constructions used from the Python standard library: HMAC-SHA256 (RFC 2104) and SHA-256.
