@@ -1,4 +1,4 @@
-"""Crash-safe rotation of a device's signing key (M-A7).
+"""Crash-safe rotation of a device's signing key.
 
 Local journal: PREPARED, then COMMITTED, then applied.
 

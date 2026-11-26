@@ -1,7 +1,7 @@
-"""The shared interfaces in ``t4.api`` must match the real modules (owner: c1).
+"""The shared interfaces in ``t4.api`` must match the real modules.
 
 Every case imports the real module if it is present (otherwise that case is skipped,
-for example on a branch that does not contain c3's code) and compares, for each method
+for example when a module is absent) and compares, for each method
 named in the interface, its parameter names, kinds and whether each has a default.
 A mismatch means the interface and the code drifted apart: fix whichever is wrong and
 bump ``API_VERSION``.

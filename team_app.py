@@ -1,4 +1,4 @@
-"""Dispatch: validate a request and route it to the service (owner: c1).
+"""Dispatch: validate a request and route it to the service.
 
 ``track4_service.py`` (the official entry point) calls ``dispatch`` with one
 parsed JSON object. This file does only two things:

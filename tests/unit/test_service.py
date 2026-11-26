@@ -131,7 +131,7 @@ def test_key_material_is_never_stored_logged_or_returned(state_dir):
     assert MARKER not in everything
 
 
-# --- ordering and failure behaviour (PRD M-A11) ---------------------------------------------------
+# --- ordering and failure behaviour  ---------------------------------------------------
 
 
 def test_a_failing_audit_log_fails_a_read_closed_and_changes_no_state(env):

@@ -1,4 +1,4 @@
-"""Alerts from our own access logs (M-C11, official mission requirement).
+"""Alerts from our own access logs (official mission requirement).
 
 What it does
     1. Verifies every input log with the audit verifier (hash chain, signed
@@ -68,13 +68,13 @@ ADMIN_ACTIONS = frozenset({"enroll", "rotate", "revoke_device", "revoke_actor"})
 LOG_SUBDIR = "log"
 # Node rules meaning "valid signature, but not sent by its signer to this node
 # at this time": attributing these to the signer would let anyone who captures
-# one request frame its signer (c3-to-c4-002).
+# one request frame its signer.
 NOT_FROM_SIGNER_RULES = frozenset({"NODE-WRONG-NODE", "NODE-REPLAY", "NODE-EXPIRED",
                                    "NODE-KEY-INACTIVE"})
 # The node checks `actor == device owner` only AFTER the wrong-node and revoked-device/actor
 # checks. A request denied at one of these rules (or at the owner check itself) proves the
 # signature, not that the claimed actor is the signer's owner, so the actor name must not be
-# attributed: a rogue enrolled device can name any victim (SA-006).
+# attributed: a rogue enrolled device can name any victim.
 ACTOR_UNPROVEN_RULES = frozenset({"NODE-DEVICE-REVOKED", "NODE-ACTOR-REVOKED", "NODE-OWNER-MISMATCH"})
 
 
@@ -116,8 +116,8 @@ def fit_field(value: str, limit: int = MAX_FIELD_CHARS) -> str:
     prefixes (``claimed:``, ``<node_id>/``), so a converted field can exceed
     the limit. Over-long values become a readable prefix plus the SHA-256 of
     the whole value: deterministic, so grouping still works, and two
-    different values never collapse into one. (c5-to-c4-002)
-    """
+    different values never collapse into one.
+"""
     if len(value) <= limit:
         return value
     digest = hashlib.sha256(value.encode("utf-8", "surrogatepass")).hexdigest()

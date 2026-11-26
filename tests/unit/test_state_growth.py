@@ -1,4 +1,4 @@
-"""State growth and first-setup robustness (c2's security review of af2fa4a, findings 1 and 2).
+"""State growth and first-setup robustness.
 
 Finding 1: identifiers up to 4 KiB were stored raw in the request index, the revoked
 set and the guard counters, so a flood of long identifiers could push state.json past

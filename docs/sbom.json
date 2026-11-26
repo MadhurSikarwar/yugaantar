@@ -40,7 +40,7 @@
         }
       ],
       "name": "pqcrypto",
-      "notes": "Mandated by the official contract (Track-4-Toolkit docs/adapter-v1.md: pqcrypto==0.4.0). CFFI bindings to PQClean 'clean' C code; the symbols used are PQCLEAN_MLKEM768_CLEAN_* and PQCLEAN_MLDSA65_CLEAN_* (read from the installed wrapper modules). Upstream PQClean was archived read-only on 2026-08-04 and is not maintained; the pqcrypto Python package itself published 1.0.0 on 2026-08-15. Not replaced: the contract fixes this version.",
+      "notes": "Mandated by the official contract (the official toolkit contract: pqcrypto==0.4.0). CFFI bindings to PQClean 'clean' C code; the symbols used are PQCLEAN_MLKEM768_CLEAN_* and PQCLEAN_MLDSA65_CLEAN_* (read from the installed wrapper modules). Upstream PQClean was archived read-only on 2026-08-04 and is not maintained; the pqcrypto Python package itself published 1.0.0 on 2026-08-15. Not replaced: the contract fixes this version.",
       "pinned_by": [
         "requirements.txt"
       ],

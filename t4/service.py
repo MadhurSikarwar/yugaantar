@@ -1,4 +1,4 @@
-"""The vault service: the five operations, orchestrated (owner: c1).
+"""The vault service: the five operations, orchestrated.
 
 What it does
     ``VaultService`` runs one validated request against the state store, the
@@ -6,7 +6,7 @@ What it does
     returns the response dictionary or raises a ``Track4Error``. It knows nothing
     about stdin, stdout or exit codes; ``track4_service.py`` owns those.
 
-Ordering guarantees (PRD M-A11)
+Ordering guarantees
     Everything happens while the state lock is held, in this order:
 
         read / protected_read:  decide -> (crypto) -> append audit entry ->
@@ -239,7 +239,7 @@ class VaultService:
             state = VaultState.load(txn)
             newly_revoked = state.revoke(request.actor)
             state.save(txn)
-            txn.commit()  # durable BEFORE logging (M-A11)
+            txn.commit()  # durable BEFORE logging
             try:
                 self._require_history(state)
                 self._audit().append(
@@ -306,7 +306,7 @@ class VaultService:
                 self._emit_alerts(alerts, actor=request.actor, target=request.asset, request_id=request_id)
                 return {"decision": "deny"}
 
-            # Authorized: only now touch the public key (PRD M-A2).
+            # Authorized: only now touch the public key.
             body = state.body_of(request.asset) or ""
             try:
                 if request.public_key is None:
@@ -328,7 +328,7 @@ class VaultService:
                 raise InputError("public key rejected") from None
             finally:
                 # This only drops our reference so the object can be collected. Python bytes cannot be
-                # erased in place, so it is NOT zeroization; see docs/threat-model.md (secret lifetime).
+                # erased in place, so it is NOT zeroization; see the README's limits section.
                 shared_secret = b""
 
             self._audit().append(

@@ -1,4 +1,4 @@
-"""Seeded generator of synthetic, labelled access logs (PRD M-C10).
+"""Seeded generator of synthetic, labelled access logs.
 
 What it does: writes ``events.csv`` and ``labels.csv`` in the toolkit's practice
 format, ``approvals.json`` in the same shape, ``context.json`` (the invented world)
@@ -7,7 +7,7 @@ same seed and size always produce the same bytes.
 
     python tools/gen_logs.py --out DIR [--seed N | --held-out] [--events 12000]
 
-Independence: written from the practice files, their README and the PRD's label
+Independence: written from the practice files, their notes and the published label
 definitions only, never from the detector's code.
 
 What it exercises: approved and unapproved role changes, approval boundaries,

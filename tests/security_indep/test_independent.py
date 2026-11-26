@@ -227,7 +227,7 @@ def test_pinned_audit_detects_damage(folder,mutation):
     assert not verify_log(folder,pin,pk).ok
 
 def test_live_append_must_reject_earlier_log_damage(folder):
-    """SA-001: expected to fail until the live audit integrity gap is fixed."""
+    """expected to fail until the live audit integrity gap is fixed."""
     setup(folder)
     for i in range(5): ok(folder,dict(op='read',actor='alice',asset='a',request_id=str(i)))
     path=folder/'audit'/LOG_NAME
@@ -253,13 +253,13 @@ def approval(**kw):
     values.update(kw); return Approval(**values)
 
 def test_detector_approval_scope_required():
-    """SA-002: an approval for one service must not approve another service."""
+    """an approval for one service must not approve another service."""
     e=event('wrong-scope',target_service='reports-west',action='grant',role_after='report-reader',approval_id='approved')
     result=analyze([e],{'approved':approval()})
     assert result.predicted()['wrong-scope']=='unexpected_role_change', result.predicted()
 
 def test_detector_cannot_emit_before_evidence_arrives():
-    """SA-003: delayed role change arrives after the privileged access."""
+    """delayed role change arrives after the privileged access."""
     read=event('use',when=2,received=3,role_before='operator',role_after='operator',receipt_index=0)
     change=event('change',when=1,received=30,action='grant',role_after='operator',receipt_index=1)
     result=analyze([read,change],{})
@@ -267,7 +267,7 @@ def test_detector_cannot_emit_before_evidence_arrives():
     assert alert.emitted_at >= change.received_time_utc, 'alert timestamp predates receipt of necessary evidence'
 
 def test_detector_unauthorized_revoke_does_not_suppress_alert():
-    """SA-004: unapproved revocations must not explain away multi-service probing."""
+    """unapproved revocations must not explain away multi-service probing."""
     revoke=approval(operation='revoke_role',approved_by='intruder',role='report-reader',
                     effective_at=datetime(2026,1,1,tzinfo=timezone.utc))
     grant=approval(scope=('reports-east','reports-west'))
@@ -277,7 +277,7 @@ def test_detector_unauthorized_revoke_does_not_suppress_alert():
     assert any(a.rule=='DET-LATERAL-MOVEMENT' for a in result.alerts), result.predicted()
 
 def test_backup_removal_survives_authority_without_attached_vault(folder):
-    """SA-005: restore promises to merge removals from readable current state too."""
+    """restore promises to merge removals from readable current state too."""
     a,d,peer,n=system(folder)
     v=Vault.create(folder/'vaultkeys',folder/'backups','authority')
     a.grant('bob','a',101); v.backup(a.store,'authority',102)
@@ -287,7 +287,7 @@ def test_backup_removal_survives_authority_without_attached_vault(folder):
     assert respond(n,peer.make_request('n','a',104),104)=={'decision':'deny'}, 'removed grant restored'
 
 def test_owner_mismatch_not_attributed_to_victim(folder):
-    """SA-006: signature verifies device ownership, not an arbitrary actor claim."""
+    """signature verifies device ownership, not an arbitrary actor claim."""
     from t4.detect.export import run_export, LogSource
     a,d,peer,n=system(folder)
     assert respond(n,d.make_request('n','b',101,actor='bob'),101)=={'decision':'deny'}

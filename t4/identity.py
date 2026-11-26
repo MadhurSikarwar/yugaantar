@@ -1,4 +1,4 @@
-"""Vault state model: who owns what, who is disabled or revoked (owner: c1).
+"""Vault state model: who owns what, who is disabled or revoked.
 
 What it does
     ``VaultState`` is the in-memory form of the documents kept by
@@ -46,10 +46,10 @@ def identifier_key(identifier: str) -> str:
 
     Identifiers may be up to 4 KiB of arbitrary characters, and JSON escaping can
     multiply that by six. Storing them raw let one flood of long identifiers grow
-    the state file without bound (c2's security review, finding 1). Keys built
+    the state file without bound. Keys built
     from this function make every stored record a small, constant size. The hash
     is for compaction, not secrecy.
-    """
+"""
     return hashlib.sha256(b"t4-id-v1:" + identifier.encode("utf-8")).hexdigest()
 
 
