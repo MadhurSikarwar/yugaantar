@@ -97,7 +97,8 @@ def part_adapter(root: Path) -> None:
     from pqcrypto.kem import ml_kem_768
 
     state = root / "adapter-state"
-    state.mkdir()
+    state.mkdir(mode=0o700)
+    os.chmod(state, 0o700)  # the adapter refuses a state directory others can read (POSIX)
     call = Adapter(state)
 
     section("1. The judged adapter: an owner reads, a peer reads")
@@ -115,10 +116,12 @@ def part_adapter(root: Path) -> None:
     challenge = secrets.token_hex(8)
     reply = call({"op": "protected_read", "actor": "maya", "asset": "brief-maya",
                   "challenge": challenge, "public_key": base64.b64encode(pk).decode()})
-    shared = ml_kem_768.decrypt(sk, base64.b64decode(reply["ciphertext"]))
-    expected = hmac.new(shared, (challenge + contents["brief-maya"]).encode(), hashlib.sha256).hexdigest()
-    check(hmac.compare_digest(expected, reply["proof"]),
-          "client decapsulates, recomputes HMAC(secret, challenge + body): proof matches")
+    ok = False
+    if "ciphertext" in reply and "proof" in reply:
+        shared = ml_kem_768.decrypt(sk, base64.b64decode(reply["ciphertext"]))
+        expected = hmac.new(shared, (challenge + contents["brief-maya"]).encode(), hashlib.sha256).hexdigest()
+        ok = hmac.compare_digest(expected, reply["proof"])
+    check(ok, "client decapsulates, recomputes HMAC(secret, challenge + body): proof matches")
     say("  (the body itself is not sent by protected_read; the shared secret is never stored)")
 
     section("3. Maya's phone is lost: revoke, then her reads are denied; Noor is unaffected")
