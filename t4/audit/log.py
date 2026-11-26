@@ -521,6 +521,18 @@ class AuditLog:
         except OSError:
             raise AuditError("audit log could not be read or signed") from None
 
+    def last_seq(self) -> int:
+        """Sequence number of the newest complete entry (0 for an empty log). Reads only the tail.
+
+        A caller that saved a number returned by ``append`` can tell from this that entries have
+        since been lost. It does not verify the chain.
+        """
+        try:
+            lines, _partial = _tail(self.log_path, 1)
+        except OSError:
+            raise AuditError("audit log could not be read") from None
+        return parse_line(lines[-1])["seq"] if lines else 0
+
     # ---- reading -----------------------------------------------------------------
 
     def iter_entries(self):

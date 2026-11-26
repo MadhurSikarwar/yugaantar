@@ -7,7 +7,7 @@ What it does
     policy: ``t4.policy`` decides, ``t4.service`` orchestrates.
 
 Documents (names are fixed; see ``t4.store``)
-    meta      {"generation", "epoch", "next_n"}
+    meta      {"generation", "epoch", "next_n", "audit_seq"}
     assets    {asset: {"owner", "body"}}            (bounded by the 1 MiB ``setup`` input)
     actors    {"disabled": [...],                   (bounded by the ``setup`` input)
                "revoked": {identifier_key(actor): epoch_when_revoked}}
@@ -58,6 +58,9 @@ class VaultState:
     generation: int = 0
     epoch: int = 0
     next_n: int = 0
+    # Highest audit entry number this state has seen. It only goes up, also across generations;
+    # a log whose newest entry is below it has lost history.
+    audit_seq: int = 0
     assets: dict[str, dict] = field(default_factory=dict)
     disabled: set[str] = field(default_factory=set)
     revoked: dict[str, int] = field(default_factory=dict)
@@ -74,6 +77,7 @@ class VaultState:
             generation=int(meta.get("generation", 0)),
             epoch=int(meta.get("epoch", 0)),
             next_n=int(meta.get("next_n", 0)),
+            audit_seq=int(meta.get("audit_seq", 0)),
             assets=txn.get("assets") or {},
             disabled=set(actors.get("disabled", [])),
             revoked=dict(actors.get("revoked", {})),
@@ -82,7 +86,8 @@ class VaultState:
         )
 
     def save(self, txn: Txn) -> None:
-        txn.put("meta", {"generation": self.generation, "epoch": self.epoch, "next_n": self.next_n})
+        txn.put("meta", {"generation": self.generation, "epoch": self.epoch, "next_n": self.next_n,
+                         "audit_seq": self.audit_seq})
         txn.put("assets", self.assets)
         txn.put("actors", {"disabled": sorted(self.disabled), "revoked": self.revoked})
         txn.put("requests", self.requests)

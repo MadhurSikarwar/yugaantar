@@ -113,6 +113,15 @@ class Authority:
 
             Vault(**record["vault"]).record_removal(set_name, item, at)
 
+    def _rotation_in_vault(self, record: dict, device: dict, entry: dict) -> None:
+        if record["vault"]:
+            from t4.backup import Vault
+
+            try:
+                Vault(**record["vault"]).record_rotation(device["keys"][0]["public_key"], entry)
+            except OSError:
+                raise NodeError("the rotation could not be recorded in the vault") from None
+
     # -- devices ---------------------------------------------------------
 
     def enroll(self, device_id: str, owner: str, public_key: str, now: float) -> None:
@@ -168,8 +177,11 @@ class Authority:
                 raise NodeError("an earlier rotation has not activated yet")
             if not activate_at > announced + record["T"] + record["s"]:
                 raise NodeError("activation time must be more than T + s ahead")
-            device["keys"].append({"version": version, "public_key": public_key,
-                                   "activate_at": activate_at})
+            entry = {"version": version, "public_key": public_key, "activate_at": activate_at}
+            device["keys"].append(entry)
+            # Vault first: if it cannot record the new key, nothing is published, because a
+            # later restore would silently make the replaced key current again.
+            self._rotation_in_vault(record, device, entry)
             self._event("rotate", device_id, "KEY-ROTATE",
                         {"owner": device["owner"], "version": version,
                          "activate_at": repr(activate_at),
@@ -195,14 +207,20 @@ class Authority:
             at = record[set_name].get(item, max(now, record["last_issued_at"]))
             record[set_name][item] = at
             txn.put(RECORD, record)
+            # Vault before the save: an extra removal there is safe, a missing one is not.
             # A revocation persists even if the vault or the log fails.
-            for step in (lambda: self._revoke_in_vault(record, set_name, item, at),
-                         lambda: self._event(action, item, rule, {"effective_at": repr(at)},
-                                             identity=[action, item, repr(at)])):
-                try:
-                    step()
-                except Exception as error:
-                    failure = error
+            try:
+                self._revoke_in_vault(record, set_name, item, at)
+            except Exception as error:
+                failure = error
+        # Logged only after the revocation is saved. So the log never reports a revocation that
+        # is not in force, and a retry after a crash finds the same time and logs it once.
+        with self.store.locked():
+            try:
+                self._event(action, item, rule, {"effective_at": repr(at)},
+                            identity=[action, item, repr(at)])
+            except Exception as error:
+                failure = error
         if failure is not None:
             raise NodeError("revoked, but recording it in the vault or log failed") from failure
         return at

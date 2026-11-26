@@ -45,6 +45,7 @@ def check(state_dir: Path) -> dict:
         with FileStore(effective).locked() as txn:
             meta = txn.get("meta") or {}
         state_generation, state_epoch = int(meta.get("generation", 0)), int(meta.get("epoch", 0))
+        state_audit_seq = int(meta.get("audit_seq", 0))
     except (Track4Error, OSError, ValueError, TypeError):
         result["problems"].append("the state file could not be read or failed its integrity check")
         return result
@@ -83,6 +84,10 @@ def check(state_dir: Path) -> dict:
                 result["problems"].append(
                     f"the audit log has {entries} entries but is signed only up to entry {report.covered_seq}: "
                     "signed checkpoints are missing")
+    if entries < state_audit_seq:
+        result["problems"].append(
+            f"the state has seen audit entry {state_audit_seq} but the log holds only {entries}: "
+            "audit history was lost")
     if state_generation < log_generation:
         result["problems"].append(
             f"the state is at generation {state_generation} but the audit log has recorded generation "
