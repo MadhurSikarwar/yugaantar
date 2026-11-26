@@ -179,7 +179,9 @@ def test_duplicate_request_id_keeps_the_first_record_and_still_applies_policy(en
     assert service.audit(AuditRequest("dup"))["decision"] == "deny"  # first record is immutable
     alerts = [e for e in audit.by_action("alert") if e["rule"] == RULE_DUPLICATE_ID]
     assert len(alerts) == 1
-    assert alerts[0]["detail"]["first_entry"] < alerts[0]["detail"]["triggering_entry"]
+    first_entry, triggering_entry = json.loads(alerts[0]["detail"]["entries"])
+    assert first_entry < triggering_entry
+    assert json.loads(alerts[0]["detail"]["request_ids"]) == ["dup"]
     assert "explanation" in alerts[0]["detail"]
 
 
@@ -198,8 +200,24 @@ def test_alerts_name_the_triggering_entries(env):
         read(service, "maya", "notes", f"bad{i}")
     alert = audit.by_action("alert")[0]
     last_read = audit.by_action("read")[-1]
-    assert alert["detail"]["triggering_entry"] == last_read["seq"]
+    assert json.loads(alert["detail"]["entries"]) == [last_read["seq"]]
+    assert json.loads(alert["detail"]["request_ids"]) == [last_read["request_id"]]
     assert alert["request_id"] == last_read["request_id"]
+
+
+def test_alerts_still_carry_their_evidence_when_the_sink_has_no_alert_method(state_dir):
+    from tests.unit.doubles import PlainAudit
+
+    service, audit, *_ = make_service(state_dir, PlainAudit())
+    service.setup(setup_request())
+    for i in range(5):
+        read(service, "maya", "notes", f"bad{i}")
+    alert = audit.by_action("alert")[0]
+    last_read = audit.by_action("read")[-1]
+    assert alert["rule"] == RULE_REPEATED_DENIAL
+    assert json.loads(alert["detail"]["entries"]) == [last_read["seq"]]
+    assert json.loads(alert["detail"]["request_ids"]) == [last_read["request_id"]]
+    assert "explanation" in alert["detail"]
 
 
 def test_invalid_input_is_counted_and_alerted_only_when_state_exists(state_dir):

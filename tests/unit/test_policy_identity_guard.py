@@ -177,10 +177,11 @@ def test_denial_alert_contents():
     guard = Guard()
     alerts = []
     for n in range(1, 6):
-        alerts = guard.on_denial("maya", asset="brief", entry_seq=n)
+        alerts = guard.on_denial("maya", asset="brief", entry_seq=n, request_id=f"r{n}")
     assert [a.rule for a in alerts] == [RULE_REPEATED_DENIAL]
     detail = alerts[0].detail
-    assert detail["denials"] == 5 and detail["asset"] == "brief" and detail["triggering_entry"] == 5
+    assert detail["denials"] == 5 and detail["asset"] == "brief"
+    assert alerts[0].entries == (5,) and alerts[0].request_ids == ("r5",)
     assert "no request was blocked" in alerts[0].explanation
 
 
@@ -204,7 +205,7 @@ def test_duplicate_alerts_at_powers_of_two_and_reference_the_first_entry():
     guard = Guard()
     first = guard.on_duplicate_request_id("r1", first_entry_seq=3, entry_seq=7)
     assert first[0].rule == RULE_DUPLICATE_ID
-    assert first[0].detail["first_entry"] == 3 and first[0].detail["triggering_entry"] == 7
+    assert first[0].entries == (3, 7) and first[0].request_ids == ("r1",)
     assert guard.on_duplicate_request_id("r1", first_entry_seq=3, entry_seq=8)  # 2nd
     assert not guard.on_duplicate_request_id("r1", first_entry_seq=3, entry_seq=9)  # 3rd
 

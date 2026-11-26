@@ -45,11 +45,18 @@ OTHER_BUCKET = "(other)"
 
 @dataclass(frozen=True)
 class Alert:
-    """One alert for the audit log. ``detail`` values are plain strings, ints or bools."""
+    """One alert for the audit log (PRD M-A12).
+
+    ``entries`` are the audit sequence numbers and ``request_ids`` the request IDs
+    that triggered it, so an operator can jump straight to the evidence.
+    ``detail`` values are plain strings, ints or bools.
+    """
 
     rule: str
     explanation: str
     detail: dict[str, str | int | bool]
+    entries: tuple[int, ...] = ()
+    request_ids: tuple[str, ...] = ()
 
 
 def _is_power_of_two(n: int) -> bool:
@@ -75,7 +82,7 @@ class Guard:
 
     # -- events -----------------------------------------------------------
 
-    def on_denial(self, actor: str, *, asset: str, entry_seq: int) -> list[Alert]:
+    def on_denial(self, actor: str, *, asset: str, entry_seq: int, request_id: str = "") -> list[Alert]:
         key = actor if (actor in self._denials or len(self._denials) < MAX_TRACKED_ACTORS) else OTHER_BUCKET
         count = min(self._denials.get(key, 0) + 1, COUNTER_CAP)
         self._denials[key] = count
@@ -87,7 +94,9 @@ class Guard:
                 f"The presented identity has been denied {count} times. "
                 "This can mean probing, or a lost device that is still being used. "
                 "The identity is unproven, so no request was blocked.",
-                {"denials": count, "asset": asset, "triggering_entry": entry_seq, "tracked_as_other": key == OTHER_BUCKET},
+                {"denials": count, "asset": asset, "tracked_as_other": key == OTHER_BUCKET},
+                entries=(entry_seq,),
+                request_ids=(request_id,) if request_id else (),
             )
         ]
 
@@ -100,12 +109,9 @@ class Guard:
                 RULE_DUPLICATE_ID,
                 "A request_id was used more than once. The first record is kept; the new "
                 "request was decided by the normal policy and logged as a separate entry.",
-                {
-                    "request_id": request_id,
-                    "first_entry": first_entry_seq,
-                    "triggering_entry": entry_seq,
-                    "occurrences": self._duplicates,
-                },
+                {"occurrences": self._duplicates},
+                entries=(first_entry_seq, entry_seq),
+                request_ids=(request_id,),
             )
         ]
 

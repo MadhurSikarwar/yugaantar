@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import os
 import sys
 from dataclasses import dataclass
@@ -102,18 +103,43 @@ class VaultService:
         print(message, file=sys.stderr)
 
     def _emit_alerts(self, alerts: list[Alert], *, actor: str, target: str, request_id: str) -> None:
-        """Append alerts to the audit log. Best effort: never raises."""
+        """Append alerts to the audit log. Best effort: never raises.
+
+        Uses the log's own ``alert`` method when it has one (it stores the
+        triggering entry numbers and request IDs in the form the operator
+        commands read). A sink without it gets the same information through
+        ``append`` so nothing is lost.
+        """
         for alert in alerts:
             try:
-                self._audit().append(
-                    actor=actor,
-                    action="alert",
-                    target=target,
-                    decision="alert",
-                    rule=alert.rule,
-                    request_id=request_id,
-                    detail={"explanation": alert.explanation, **alert.detail},
-                )
+                audit = self._audit()
+                native = getattr(audit, "alert", None)
+                if callable(native):
+                    native(
+                        rule=alert.rule,
+                        explanation=alert.explanation,
+                        actor=actor,
+                        target=target,
+                        request_id=request_id,
+                        entries=alert.entries,
+                        request_ids=alert.request_ids,
+                        detail=alert.detail,
+                    )
+                else:
+                    audit.append(
+                        actor=actor,
+                        action="alert",
+                        target=target,
+                        decision="alert",
+                        rule=alert.rule,
+                        request_id=request_id,
+                        detail={
+                            "explanation": alert.explanation,
+                            "entries": json.dumps(list(alert.entries)),
+                            "request_ids": json.dumps(list(alert.request_ids)),
+                            **alert.detail,
+                        },
+                    )
             except Exception:  # noqa: BLE001 - alerts must never break a correct answer
                 self._note("An alert could not be logged.")
 
@@ -303,7 +329,7 @@ class VaultService:
                     request_id, first_entry_seq=int(first["seq"]), entry_seq=entry_seq
                 )
         if not decision.allow:
-            alerts += guard.on_denial(actor, asset=asset, entry_seq=entry_seq)
+            alerts += guard.on_denial(actor, asset=asset, entry_seq=entry_seq, request_id=request_id)
         state.guard = guard.to_doc()
         return alerts
 

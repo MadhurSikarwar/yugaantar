@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 from pathlib import Path
 from typing import Callable
 
@@ -28,11 +29,22 @@ class FakeAudit:
         self.entries.append({**entry, "seq": seq})
         return {"seq": seq, "hash": hashlib.sha256(str(seq).encode()).hexdigest()}
 
+    def alert(self, *, rule, explanation, actor="", target="", request_id="", entries=(), request_ids=(), detail=None) -> dict:
+        """Mirrors ``t4.audit.log.AuditLog.alert``: lists are stored as JSON strings."""
+        extra = {**(detail or {}), "explanation": explanation, "entries": json.dumps(list(entries)), "request_ids": json.dumps(list(request_ids))}
+        return self.append(actor=actor, action="alert", target=target, decision="alert", rule=rule, request_id=request_id, detail=extra)
+
     def by_action(self, action: str) -> list[dict]:
         return [e for e in self.entries if e["action"] == action]
 
     def rules(self) -> list[str]:
         return [e["rule"] for e in self.entries]
+
+
+class PlainAudit(FakeAudit):
+    """A sink that only has ``append`` (no native ``alert``), to test the fallback path."""
+
+    alert = None  # type: ignore[assignment]
 
 
 class FakeKem:
@@ -59,8 +71,8 @@ class RealProof:
         return hmac.new(shared_secret, challenge + stored_body, hashlib.sha256).hexdigest()
 
 
-def make_service(state_dir: Path) -> tuple[VaultService, FakeAudit, FakeKem, FileStore]:
-    audit, kem, store = FakeAudit(), FakeKem(), FileStore(state_dir)
+def make_service(state_dir: Path, audit: FakeAudit | None = None) -> tuple[VaultService, FakeAudit, FakeKem, FileStore]:
+    audit, kem, store = audit or FakeAudit(), FakeKem(), FileStore(state_dir)
     deps = Dependencies(
         store=store,
         audit_factory=lambda: audit,

@@ -246,14 +246,59 @@ def test_private_keys_are_never_printed(adapter):
     seen = b"".join(out + err for out, err in adapter.transcript)
     key_hex = (adapter.state_dir / "state.key").read_text().strip().encode()
     assert key_hex not in seen
-    signing = json.loads((adapter.state_dir / "audit-signing.json").read_text())
-    assert signing["secret_key"].encode() not in seen
+    audit_secret = (adapter.state_dir / "audit" / "audit.key").read_bytes()
+    assert len(audit_secret) == 4032  # an ML-DSA-65 secret key
+    for form in (audit_secret.hex().encode(), base64.b64encode(audit_secret)):
+        assert form not in seen
 
 
 def test_outputs_stay_far_below_the_64_kib_stream_cap(adapter):
     provision(adapter)
     for out, err in adapter.transcript:
         assert len(out) < 4096 and len(err) < 4096
+
+
+# --- the operator's view (c2's audit CLI reading what the adapter wrote) -------------------------------
+
+
+def _audit_cli(adapter: Adapter, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, "-m", "t4.audit.cli", "--dir", str(adapter.state_dir / "audit"), *args],
+        capture_output=True, text=True, cwd=REPO_ROOT, timeout=60,
+    )
+
+
+def test_the_operator_can_verify_explain_and_list_alerts(adapter):
+    provision(adapter)
+    adapter.call(op="read", actor="maya", asset="brief", request_id="r1")
+    for i in range(5):
+        adapter.call(op="read", actor="mallory", asset="brief", request_id=f"bad{i}")
+    public_key, _ = ml_kem_768.generate_keypair()
+    adapter.call(op="protected_read", actor="maya", asset="brief", challenge="trace-me", public_key=base64.b64encode(public_key).decode())
+
+    verified = _audit_cli(adapter, "verify-log")
+    assert verified.returncode == 0 and json.loads(verified.stdout)["ok"] is True
+
+    explained = _audit_cli(adapter, "explain", "r1")
+    assert explained.returncode == 0 and "POL-ALLOW-OWNER" in explained.stdout
+
+    traced = _audit_cli(adapter, "explain", "--challenge", hashlib.sha256(b"trace-me").hexdigest())
+    assert traced.returncode == 0 and "protected_read" in traced.stdout
+
+    alerts = _audit_cli(adapter, "alerts")
+    assert alerts.returncode == 0 and "GRD-REPEATED-DENIAL" in alerts.stdout
+    alert = json.loads(alerts.stdout.strip().splitlines()[0])
+    assert json.loads(alert["detail"]["entries"]) and json.loads(alert["detail"]["request_ids"]) == ["bad4"]
+
+
+def test_editing_the_audit_log_is_caught_by_verify(adapter):
+    provision(adapter)
+    for i in range(3):
+        adapter.call(op="read", actor="maya", asset="brief", request_id=f"r{i}")
+    path = adapter.state_dir / "audit" / "audit.jsonl"
+    path.write_bytes(path.read_bytes().replace(b'"allow"', b'"deny"', 1))
+    verified = _audit_cli(adapter, "verify-log")
+    assert verified.returncode == 1 and json.loads(verified.stdout)["ok"] is False
 
 
 # --- concurrency ----------------------------------------------------------------------------------------------
