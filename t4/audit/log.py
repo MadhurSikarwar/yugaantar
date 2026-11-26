@@ -16,11 +16,34 @@ Attacks defended against:
   lock must take that one first (PRD lock order: store, then audit).
 - Interrupted writes: only an incomplete last line is removed, and an alert says so.
 - Damaged logs: appending and searching fail closed with ``AuditIntegrityError``.
+- Editing an entry written within roughly the last two checkpoint intervals: every
+  live ``append()`` (and ``head()``) now re-derives and cross-checks the whole chain
+  back through the *second-newest* signed checkpoint, not just the newest entry or
+  two, so this is caught on the very next request, not only by an operator-run
+  ``verify-log``. Anchoring one checkpoint further back than the newest matters: it
+  means the newest checkpoint's own entry is re-derived from what is actually on disk
+  and compared against what the checkpoint claims, rather than that one entry's hash
+  being trusted outright -- which otherwise misses a tamper of exactly that entry
+  whenever it is the newest (the common case for a node log, where a checkpoint sits
+  on every single entry). The window this re-checks is bounded (``2 *
+  checkpoint_every``) and does not grow with the size of the log (see
+  ``_head_of_complete_log``).
 
-Not covered: whoever can write this directory can read the signing key and rebuild
-everything. Only a head and public key pinned *outside* the directory reveal that,
-and only up to the pinned entry. Restoring an older copy of the whole directory
-also passes without such a pin.
+Not covered:
+- Editing an entry older than that window. The second-newest checkpoint's own recorded
+  hash is trusted as a fixed anchor on every live append rather than re-derived from
+  the whole log each time (that would be an unbounded cost per append and would not
+  scale to this project's own documented unbounded log growth), so an older tamper
+  leaves the live append path's own check satisfied. This is caught only by a full
+  chain walk: ``entries()``, ``verify()``/``verify-log``, ``explain`` or ``find`` --
+  i.e. an operator-run check against a pin kept outside the directory. The live
+  service does not run one of these on its own; it must be run by the operator (a cron
+  job, a step in CI, or a pre-judging check), the same way the pinned head itself must
+  be kept outside the directory to be worth anything.
+- Whoever can write this directory can read the signing key and rebuild everything
+  consistently with it. Only a head and public key pinned *outside* the directory
+  reveal that, and only up to the pinned entry. Restoring an older copy of the whole
+  directory also passes without such a pin.
 """
 
 from __future__ import annotations
@@ -201,7 +224,14 @@ def _write_atomically(path: Path, data: bytes) -> None:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
-    os.replace(temporary, path)
+    for attempt in range(50):
+        try:
+            os.replace(temporary, path)
+            break
+        except PermissionError:  # Windows: another program briefly has it open.
+            if attempt == 49:
+                raise
+            time.sleep(0.01)
     _fsync_directory(path.parent)
 
 
@@ -469,17 +499,34 @@ class AuditLog:
 
     # ---- internal (all called with the lock held) ---------------------------------
 
-    def _newest_checkpoint(self) -> dict | None:
-        lines, _partial = _tail(self.checkpoint_path, 1)
-        if not lines:
-            return None
+    @staticmethod
+    def _parse_checkpoint_record(line: bytes) -> dict:
         try:
-            record = json.loads(lines[-1].decode("ascii"))
+            record = json.loads(line.decode("ascii"))
             if type(record["seq"]) is not int or not isinstance(record["hash"], str):
                 raise ValueError("bad checkpoint")
         except (ValueError, UnicodeError, KeyError, TypeError, RecursionError):
             raise AuditIntegrityError("malformed checkpoint record") from None
         return record
+
+    def _newest_checkpoint(self) -> dict | None:
+        lines, _partial = _tail(self.checkpoint_path, 1)
+        return self._parse_checkpoint_record(lines[-1]) if lines else None
+
+    def _checkpoint_pair(self) -> tuple[dict | None, dict | None]:
+        """(second-newest, newest) checkpoint records; either or both may be ``None``.
+
+        Used by ``_head_of_complete_log`` so a live append re-derives and cross-checks
+        the newest checkpoint's own entry too, instead of trusting its recorded hash
+        without ever recomputing it (that blind trust was the gap this pair closes).
+        """
+        lines, _partial = _tail(self.checkpoint_path, 2)
+        records = [self._parse_checkpoint_record(line) for line in lines]
+        if not records:
+            return None, None
+        if len(records) == 1:
+            return None, records[0]
+        return records[0], records[1]
 
     @staticmethod
     def _compare_with_checkpoint(checkpoint: dict, count: int, entries: list[dict]) -> None:
@@ -521,22 +568,71 @@ class AuditLog:
         return self._head_of_complete_log()
 
     def _head_of_complete_log(self) -> tuple[int, str]:
-        lines, _partial = _tail(self.log_path, 2)
+        """Verify and return the head, re-deriving every entry's hash back through the
+        *second-newest* signed checkpoint (or genesis, if fewer than two exist yet) on
+        every call.
+
+        Bounded, not a full scan: the gap from the second-newest checkpoint to the tail
+        is at most ``2 * checkpoint_every`` entries by construction (a checkpoint is
+        written every ``checkpoint_every`` appends; ``head()`` can only add extra
+        checkpoints, never skip a scheduled one), so the window read and re-hashed here
+        never grows with the size of the whole log.
+
+        Anchoring one checkpoint further back than the newest one matters: it means the
+        newest checkpoint's *own* entry gets walked and its hash re-derived from the
+        actual bytes on disk too, and cross-checked against what the checkpoint claims
+        (below), instead of the newest checkpoint's recorded hash being trusted outright
+        without ever being recomputed -- which would miss a tamper of exactly that one
+        entry whenever it happens to be the newest (the common case for a node log,
+        where ``checkpoint_every == 1`` and a checkpoint sits on every single entry).
+
+        What this catches that a 1-2 line tail check would not: an edit to any entry
+        written within roughly the last two checkpoint intervals is now detected on the
+        very next append, not only an edit to the newest entry or two.
+
+        What this still does NOT catch: an edit to an entry older than that window. That
+        tamper leaves this window's own chain self-consistent, because the second-newest
+        checkpoint's recorded hash is itself trusted as a fixed anchor here, not
+        re-derived from the whole log on every append (which would be an unbounded,
+        O(log size) cost per append and does not scale to this project's own documented
+        unbounded log growth). Catching an older tamper still needs a full chain walk:
+        ``entries()``, ``verify()``/``verify-log``, ``explain`` or ``find`` -- i.e. an
+        operator-run check against a pin kept outside the directory, not something the
+        live service does by itself on every request. See docs/threat-model.md.
+        """
+        older, newest = self._checkpoint_pair()
+        anchor_seq = older["seq"] if older is not None else 0
+        anchor_hash = older["hash"] if older is not None else GENESIS_HASH
+        window = 2 * self.checkpoint_every + 2  # 2 intervals of margin
+        lines, _partial = _tail(self.log_path, window)
         if not lines:
-            seq, head_hash = 0, GENESIS_HASH
-        else:
-            last = parse_line(lines[-1])
-            previous = parse_line(lines[-2])["hash"] if len(lines) > 1 else GENESIS_HASH
-            if (len(lines) == 1) != (last["seq"] == 1) or last["hash"] != entry_hash(last, previous):
-                raise AuditIntegrityError("audit chain is broken at the newest entry")
-            seq, head_hash = last["seq"], last["hash"]
-        checkpoint = self._newest_checkpoint()
-        if checkpoint is not None:
-            if checkpoint["seq"] > seq:
+            if newest is not None:
                 raise AuditIntegrityError("audit log is shorter than a signed checkpoint")
-            if checkpoint["seq"] == seq and checkpoint["hash"] != head_hash:
+            return 0, GENESIS_HASH
+        parsed = [parse_line(line) for line in lines]
+        # The log's own tail (not the anchor) decides whether it's shorter than a
+        # checkpoint that claims a higher seq -- check this before anything else, since
+        # a truncated/rolled-back log must fail closed even if the window below ends up
+        # empty after filtering (nothing left to re-walk is not the same as "verified").
+        if newest is not None and newest["seq"] > parsed[-1]["seq"]:
+            raise AuditIntegrityError("audit log is shorter than a signed checkpoint")
+        if parsed[0]["seq"] > anchor_seq + 1:
+            # The window was not wide enough to reach the older anchor (or genesis).
+            # Should not happen with this instance's own checkpoint_every; fail closed
+            # rather than silently trusting an unverified gap if it ever does (for
+            # example checkpoint_every was lowered after the checkpoint was written).
+            raise AuditIntegrityError("cannot verify the log back to its last checkpoint")
+        parsed = [entry for entry in parsed if entry["seq"] >= anchor_seq + 1]
+        previous, seq = anchor_hash, anchor_seq
+        for entry in parsed:
+            if entry["seq"] != seq + 1 or entry["hash"] != entry_hash(entry, previous):
+                raise AuditIntegrityError(f"audit chain is broken at entry {seq + 1}")
+            previous, seq = entry["hash"], entry["seq"]
+            if newest is not None and seq == newest["seq"] and previous != newest["hash"]:
+                # The newest checkpoint's own entry, re-derived from what is actually on
+                # disk, does not match what the checkpoint claims.
                 raise AuditIntegrityError("audit log differs from a signed checkpoint")
-        return seq, head_hash
+        return seq, previous
 
     def _write_entry(self, seq: int, head_hash: str, fields: dict, detail: dict) -> dict:
         entry = {**fields, "seq": seq + 1, "ts": self._clock(), "detail": detail}
