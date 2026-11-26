@@ -148,6 +148,15 @@
       "version": "3.12"
     }
   ],
+  "demo_only": [
+    {
+      "in_requirements": "requirements-demo.txt",
+      "name": "cryptography",
+      "note": "Never imported by the adapter or t4/. File hashes are not recorded here and scripts/verify_dependencies.py does not check this package.",
+      "used_by": "demo/messaging.py",
+      "version": "50.0.2"
+    }
+  ],
   "generated": "2026-11-26",
   "not_included": "pytest (development only), the frontend's npm packages (see frontend/package-lock.json after integration).",
   "source": "Artifact hashes copied from PyPI's JSON API (https://pypi.org/pypi/<name>/<version>/json) on 2026-11-26; OSV.dev reported 0 advisories for each pinned version on the same day. Only wheels for CPython 3.12 and the sdist are listed.",

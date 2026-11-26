@@ -23,9 +23,9 @@ def send(keys, text="hello", seq=1):
                   plaintext=text, seq=seq, now=NOW)
 
 
-def receive(keys, msg, guard, recipient="bob", now=NOW, signer_public=None):
+def receive(keys, msg, guard, recipient="bob", now=NOW, signer_public=None, expected_sender="alice"):
     spk, _, _, ksk = keys
-    return m.open_message(msg, recipient=recipient, recipient_kem_secret=ksk,
+    return m.open_message(msg, recipient=recipient, recipient_kem_secret=ksk, expected_sender=expected_sender,
                           sender_sig_public=signer_public or spk, guard=guard, now=now)
 
 
@@ -94,3 +94,30 @@ def test_missing_cipher_library_fails_closed(keys, monkeypatch):
     monkeypatch.setattr(m, "_aead", gone)
     with pytest.raises(m.MessagingUnavailable):
         send(keys)
+
+
+def test_a_message_naming_another_sender_is_refused_and_cannot_move_their_counter(keys):
+    """Alice holds a valid signing key but writes "from": "bob" with a huge sequence number."""
+    _, ssk, kpk, _ = keys
+    forged = m.seal(sender="bob", sender_sig_secret=ssk, recipient="bob", recipient_kem_public=kpk,
+                    plaintext="x", seq=1000, now=NOW)
+    guard = m.ReplayGuard()
+    with pytest.raises(m.MessagingError):
+        receive(keys, forged, guard, recipient="bob", expected_sender="alice")
+    assert guard.snapshot() == {}
+
+
+@pytest.mark.parametrize("name", ["alice\ud800", "", "x" * 300, None])
+def test_bad_identity_strings_are_a_clean_error(keys, name):
+    _, ssk, kpk, _ = keys
+    with pytest.raises(m.MessagingError):
+        m.seal(sender=name, sender_sig_secret=ssk, recipient="bob", recipient_kem_public=kpk,
+               plaintext="x", seq=1, now=NOW)
+    with pytest.raises(m.MessagingError):
+        m.seal(sender="alice", sender_sig_secret=ssk, recipient=name, recipient_kem_public=kpk,
+               plaintext="x", seq=1, now=NOW)
+
+
+def test_key_derivation_separates_identity_pairs_that_used_to_collide():
+    secret = b"s" * 32
+    assert m._key(secret, "alice\x00bob", "carol") != m._key(secret, "alice", "bob\x00carol")

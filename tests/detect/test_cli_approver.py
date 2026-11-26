@@ -24,3 +24,28 @@ def test_flag_replaces_approvers(monkeypatch):
 def test_environment_variable_is_used_when_no_flag(monkeypatch):
     monkeypatch.setenv("T4_APPROVERS", " user-secops , ")
     assert cli._config(ns(approver=None)).authorized_approvers == frozenset({"user-secops"})
+
+
+def test_empty_approver_name_is_refused():
+    import pytest
+    with pytest.raises(ValueError):
+        cli._config(ns(approver=[""]))
+
+
+def test_export_uses_the_environment_variable_too(monkeypatch):
+    monkeypatch.setenv("T4_APPROVERS", "user-secops")
+    captured = {}
+
+    def fake_run_export(sources, approvals, *, approvers=None, **kw):
+        captured["approvers"] = approvers
+        raise cli.exp.ExportError("stop") if hasattr(cli, "exp") else RuntimeError
+
+    from t4.detect import export as exp
+    monkeypatch.setattr(exp, "run_export", fake_run_export)
+    args = ns(pin=None, node=["n=/nonexistent"], authority=None, approvals=None, owners=None,
+              approver=None, append_alerts=None, out_csv=None, json=False)
+    try:
+        cli.cmd_export(args)
+    except Exception:
+        pass
+    assert captured["approvers"] == ["user-secops"]

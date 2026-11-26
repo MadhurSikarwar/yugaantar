@@ -514,6 +514,9 @@ class AuditLog:
                 seq, head_hash = self._recover_and_head(full=True)
                 if self.signer is None:
                     return {"seq": seq, "hash": head_hash, "ts": self._clock(), "sig": None}
+                _older, newest = self._checkpoint_pair()
+                if newest is not None and newest["seq"] == seq and newest["hash"] == head_hash:
+                    return newest  # already signed at exactly this head: no duplicate record
                 return self._write_checkpoint(seq, head_hash)
         except OSError:
             raise AuditError("audit log could not be read or signed") from None
@@ -530,13 +533,24 @@ class AuditLog:
         it. A broken chain raises ``AuditIntegrityError`` at the first bad entry, so a caller that
         builds a result list gets no partial answer from a damaged log.
         """
+        def snapshot():
+            try:
+                size = self.log_path.stat().st_size
+            except FileNotFoundError:
+                size = 0
+            return size, self._newest_checkpoint()
+
         try:
-            with locked(self.directory):
-                try:
-                    size = self.log_path.stat().st_size
-                except FileNotFoundError:
-                    size = 0
-                newest = self._newest_checkpoint()
+            try:
+                with locked(self.directory):
+                    size, newest = snapshot()
+            except AuditError:
+                raise  # busy: never fall back to an unlocked read
+            except OSError:
+                # The directory cannot be locked for writing (a read-only mount or copy). The log
+                # is append-only and only complete lines are used, so an unlocked read is still a
+                # consistent view; every check below runs exactly as before.
+                size, newest = snapshot()
             handle = self.log_path.open("rb") if size else None
         except (OSError, FileNotFoundError):
             raise AuditError("audit log could not be read") from None
@@ -629,13 +643,20 @@ class AuditLog:
         the newest checkpoint's own entry too, instead of trusting its recorded hash
         without ever recomputing it (that blind trust was the gap this pair closes).
         """
-        lines, _partial = _tail(self.checkpoint_path, 2)
-        records = [self._parse_checkpoint_record(line) for line in lines]
-        if not records:
-            return None, None
-        if len(records) == 1:
-            return None, records[0]
-        return records[0], records[1]
+        lookback = 64
+        while True:
+            lines, _partial = _tail(self.checkpoint_path, lookback)
+            records = [self._parse_checkpoint_record(line) for line in lines]
+            if not records:
+                return None, None
+            newest = records[-1]
+            # Skip repeats at the same sequence number (older versions let ``head()`` sign the same
+            # head again and again): the anchor must be a *different*, earlier entry, or the newest
+            # entry would be trusted without being re-hashed.
+            older = next((r for r in reversed(records[:-1]) if r["seq"] < newest["seq"]), None)
+            if older is not None or len(lines) < lookback:  # found one, or the whole file was read
+                return older, newest
+            lookback *= 16
 
     @staticmethod
     def _compare_with_checkpoint(checkpoint: dict, count: int, entries: list[dict]) -> None:
