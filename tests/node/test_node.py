@@ -21,11 +21,13 @@ CONTENTS = {"file-a": "synthetic body a", "file-b": "synthetic body b"}
 
 
 class Base(unittest.TestCase):
+    signer_factory = InsecureTestSigner  # test_real_modules swaps in real ML-DSA
+
     def setUp(self) -> None:
         folder = tempfile.TemporaryDirectory(prefix="t4-test-")
         self.addCleanup(folder.cleanup)
         self.root = Path(folder.name)
-        self.signer = InsecureTestSigner()
+        self.signer = self.signer_factory()
         self.authority_log = MemoryLog()
         self.authority = Authority.create(self.root / "authority", self.signer,
                                           self.authority_log, freshness=T, skew=S)

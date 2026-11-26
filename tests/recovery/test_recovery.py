@@ -1,6 +1,7 @@
 """Rotation, backup and restore: M-A7, M-A8, PRD section 8 items 9 and 10."""
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -16,23 +17,27 @@ from t4.node.common import NodeError
 from t4.node.device import Device
 from t4.node.state import FileStore
 from tests.node.doubles import InsecureTestSigner, MemoryLog
-from tests.recovery.crash_child import KILLED
+from tests.recovery.crash_child import KILLED, REAL_ENV
 
 REPO = Path(__file__).resolve().parents[2]
 NOW, CUTOFF = 1_000_000.0, 1_000_100.0
 
 
 class Base(unittest.TestCase):
+    signer_factory = InsecureTestSigner  # test_real_modules swaps in real ML-DSA
+
     def setUp(self) -> None:
         folder = tempfile.TemporaryDirectory(prefix="t4-test-")
         self.addCleanup(folder.cleanup)
         self.root = Path(folder.name)
-        self.signer = InsecureTestSigner()
+        self.signer = self.signer_factory()
 
     def kill_at(self, operation: str, step: str, *args) -> None:
         result = subprocess.run(
             [sys.executable, "-B", "-m", "tests.recovery.crash_child", operation, step,
-             *map(str, args)], cwd=REPO, capture_output=True, timeout=60)
+             *map(str, args)], cwd=REPO, capture_output=True, timeout=60,
+            env={**os.environ, REAL_ENV: "0" if self.signer_factory is InsecureTestSigner
+                 else "1"})
         self.assertEqual(result.returncode, KILLED, result.stderr.decode(errors="replace"))
 
 

@@ -1,7 +1,7 @@
 """Run one operation and kill the process hard at a chosen step.
 
 ``os._exit`` skips all cleanup, like ``kill -9`` from the program's own side.
-Test helper only; uses the insecure test signer.
+Test helper only.
 """
 from __future__ import annotations
 
@@ -14,6 +14,15 @@ from t4.node.device import Device
 from tests.node.doubles import InsecureTestSigner, MemoryLog
 
 KILLED = 77
+REAL_ENV = "T4_TEST_REAL_SIGNER"
+
+
+def child_signer():
+    if os.environ.get(REAL_ENV) == "1":
+        from t4.node.common import load_signer
+
+        return load_signer()
+    return InsecureTestSigner()
 
 
 def main(argv: list[str]) -> int:
@@ -25,7 +34,7 @@ def main(argv: list[str]) -> int:
 
     if operation == "rotate":
         device_dir, authority_dir, now, cutoff = argv[2:]
-        signer = InsecureTestSigner()
+        signer = child_signer()
         Device(device_dir, signer).rotate(Authority(authority_dir, signer, MemoryLog()),
                                           float(now), float(cutoff), fault)
     elif operation == "restore":
@@ -33,7 +42,7 @@ def main(argv: list[str]) -> int:
         Vault(keys, backups).restore(target, record, fault)
     else:
         device_dir, keys, backups, record = argv[2:]
-        Vault(keys, backups).backup(Device(device_dir, InsecureTestSigner()).store, record,
+        Vault(keys, backups).backup(Device(device_dir, child_signer()).store, record,
                                     5.0, fault)
     return 0
 

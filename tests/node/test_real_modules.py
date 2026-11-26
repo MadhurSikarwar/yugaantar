@@ -1,6 +1,9 @@
-"""The lost-device story with the REAL signature and audit log modules.
+"""The same tests with the REAL modules.
 
-Skipped until ``t4.crypto.sig`` and ``t4.audit.log`` are present.
+* Signature tests: rerun the node and recovery suites with real ML-DSA-65.
+  Skipped until ``t4.crypto.sig`` and ``pqcrypto`` are present. They still use
+  the in-memory test log.
+* Full story: also needs the real ``t4.audit.log``.
 """
 from __future__ import annotations
 
@@ -8,6 +11,9 @@ import importlib.util
 import tempfile
 import unittest
 from pathlib import Path
+
+from tests.node import test_node
+from tests.recovery import test_recovery
 
 
 def present(name: str) -> bool:
@@ -17,17 +23,41 @@ def present(name: str) -> bool:
         return False
 
 
-@unittest.skipUnless(present("t4.crypto.sig") and present("t4.audit.log")
-                     and present("pqcrypto"), "real crypto and audit log are not available")
+HAVE_SIG = present("t4.crypto.sig") and present("pqcrypto")
+NEEDS_SIG = "real ML-DSA wrapper is not available"
+
+
+def real_signer():
+    from t4.node.common import load_signer
+
+    return load_signer()
+
+
+def with_real_signer(case: type) -> type:
+    subclass = type(f"RealSig{case.__name__}", (case,),
+                    {"signer_factory": staticmethod(real_signer), "__module__": __name__})
+    return unittest.skipUnless(HAVE_SIG, NEEDS_SIG)(subclass)
+
+
+RealSigRequests = with_real_signer(test_node.Requests)
+RealSigRevocationAndLists = with_real_signer(test_node.RevocationAndLists)
+RealSigGrantsAndLogging = with_real_signer(test_node.GrantsAndLogging)
+RealSigRotationAcrossNodes = with_real_signer(test_node.RotationAcrossNodes)
+RealSigRotationCrashes = with_real_signer(test_recovery.RotationCrashes)
+RealSigBackups = with_real_signer(test_recovery.Backups)
+
+
+@unittest.skipUnless(HAVE_SIG and present("t4.audit.log"),
+                     "real crypto and audit log are not both available")
 class RealModules(unittest.TestCase):
     def test_lost_device_story(self):
         from t4.node.authority import Authority
-        from t4.node.common import load_signer, open_log
+        from t4.node.common import open_log
         from t4.node.device import Device
         from t4.node.freshness import Node
         from t4.node.request import respond
 
-        signer = load_signer()
+        signer = real_signer()
         with tempfile.TemporaryDirectory(prefix="t4-real-") as folder:
             root = Path(folder)
             authority = Authority.create(root / "a", signer, open_log(root / "a-log"))
