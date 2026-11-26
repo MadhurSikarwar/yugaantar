@@ -25,9 +25,11 @@ How it is built (and which attack each part answers)
       missing key raises ``IntegrityError`` and the caller fails closed.
     * The key lives in ``state.key`` (mode 0600), created only when no state
       file exists, so deleting the key can never make a tampered state valid.
-    * The state directory must be a real directory owned by us with no group or
-      world access (POSIX). A pre-planted directory or symlink in a shared temp
-      directory is rejected.
+    * The state directory must be a real directory (never a symlink). If it is ours
+      we tighten it to 0700 (the worker may create it with the default umask, 0755).
+      If it is shared (sticky or world-writable, like ``/tmp``) or someone else's, we
+      never chmod it: we keep our state in a private ``track4-state-<uid>`` subfolder
+      we create inside it, and still refuse a subfolder that is not ours and private.
 
 Honest limits (also stated in the threat model)
     * The key sits next to the data. Someone who can rewrite the whole state
@@ -41,6 +43,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import enum
 import hashlib
 import hmac
 import json
@@ -85,24 +88,111 @@ def resolve_state_dir(env: dict[str, str] | None = None) -> Path:
     return base.absolute()
 
 
-def prepare_state_dir(path: Path) -> Path:
-    """Create the directory if needed and refuse an unsafe one.
+class DirAction(enum.Enum):
+    """What to do with the directory we were pointed at (see ``classify_directory``)."""
 
-    On POSIX the directory must not be a symlink, must be owned by the current
-    user and must not be accessible to group or others. Without that, anyone
-    on a shared ``/tmp`` could pre-create the directory and read or replace our
-    state.
+    USE = "use"  # ours and already private
+    TIGHTEN = "tighten"  # ours, but group or others can access it: chmod 0700, then use
+    SUBFOLDER = "subfolder"  # shared (e.g. /tmp) or not ours: keep state in our own private subfolder
+    REFUSE = "refuse"  # not a real directory, or a subfolder that is not safe
+
+
+SHARED_BITS = stat.S_ISVTX | stat.S_IWOTH  # sticky or world-writable: a directory many users share
+PRIVATE_SUBDIR_PREFIX = "track4-state-"
+
+
+def classify_directory(*, is_real_dir: bool, owner_uid: int, my_uid: int, mode: int, allow_subfolder: bool = True) -> DirAction:
+    """Decide how to treat an existing directory. Pure, so every case is unit-tested on any OS.
+
+    * Not a real directory (a symlink or a file): refuse. A symlink planted in a shared
+      folder could point our state anywhere.
+    * Ours, not shared: use it, after tightening it to 0700 if group or others can reach it.
+      The official worker may create the folder with the default umask (0755); refusing
+      that would fail every judged request, so we fix our own folder instead.
+    * Shared (sticky bit or world-writable, such as ``/tmp``) or owned by someone else:
+      never chmod it. Keep our state in a private subfolder we create inside it.
+      (Even when we ARE root and own ``/tmp``, we must not chmod the shared ``/tmp``.)
+    """
+    if not is_real_dir:
+        return DirAction.REFUSE
+    shared = bool(mode & SHARED_BITS)
+    if owner_uid == my_uid and not shared:
+        return DirAction.TIGHTEN if mode & 0o077 else DirAction.USE
+    return DirAction.SUBFOLDER if allow_subfolder else DirAction.REFUSE
+
+
+def _claim_posix(path: Path, *, allow_subfolder: bool) -> Path:
+    """POSIX: examine ``path`` through one file descriptor (no check-then-use race) and act."""
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)  # fails for a symlink or a file
+    except OSError:
+        raise IntegrityError("state path is not a real directory") from None
+    try:
+        info = os.fstat(fd)
+        action = classify_directory(
+            is_real_dir=stat.S_ISDIR(info.st_mode),
+            owner_uid=info.st_uid,
+            my_uid=os.getuid(),
+            mode=info.st_mode,
+            allow_subfolder=allow_subfolder,
+        )
+        if action is DirAction.TIGHTEN:
+            try:
+                os.fchmod(fd, 0o700)
+            except OSError:
+                raise IntegrityError("state directory could not be made private") from None
+    finally:
+        os.close(fd)
+    if action in (DirAction.USE, DirAction.TIGHTEN):
+        return path
+    if action is DirAction.SUBFOLDER:
+        child = path / f"{PRIVATE_SUBDIR_PREFIX}{os.getuid()}"
+        try:
+            child.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+        except OSError:
+            raise IntegrityError("state directory is shared and not writable") from None
+        return _claim_posix(child, allow_subfolder=False)
+    raise IntegrityError("state directory is not private")
+
+
+def prepare_state_dir(path: Path) -> Path:
+    """Create the directory if needed and return the directory to actually use.
+
+    The returned path is ``path`` itself when that is a private folder of ours (after
+    tightening a loose one to 0700), or a private ``track4-state-<uid>`` subfolder
+    inside it when ``path`` is shared (``/tmp``) or belongs to someone else. Callers
+    must use the returned path. On Windows only "is it a real directory" is checked.
     """
     try:
         path.mkdir(mode=0o700, parents=True, exist_ok=True)
-        info = os.lstat(path)
+    except FileExistsError:
+        pass
     except OSError:
         raise IntegrityError("state directory unavailable") from None
-    if not stat.S_ISDIR(info.st_mode):
-        raise IntegrityError("state path is not a real directory")
-    if not _IS_WINDOWS:
-        if info.st_uid != os.getuid() or (info.st_mode & 0o077):
-            raise IntegrityError("state directory is not private")
+    if _IS_WINDOWS:
+        info = os.lstat(path)
+        if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode):
+            raise IntegrityError("state path is not a real directory")
+        return path
+    return _claim_posix(path, allow_subfolder=True)
+
+
+def locate_state_dir(path: Path) -> Path:
+    """Where the state would be, WITHOUT creating or changing anything (for read-only checks)."""
+    if _IS_WINDOWS:
+        return path
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return path
+    action = classify_directory(
+        is_real_dir=stat.S_ISDIR(info.st_mode), owner_uid=info.st_uid, my_uid=os.getuid(), mode=info.st_mode
+    )
+    if action is DirAction.SUBFOLDER:
+        return path / f"{PRIVATE_SUBDIR_PREFIX}{os.getuid()}"
     return path
 
 
@@ -277,12 +367,17 @@ class FileStore:
         return self.directory / KEY_FILE
 
     def exists(self) -> bool:
-        """True once a state file exists (used to decide whether alerts can be stored)."""
-        return self.state_path.is_file()
+        """True once a state file exists (used to decide whether alerts can be stored).
+
+        Looks where the state would be without creating or changing anything.
+        """
+        return (locate_state_dir(self.directory) / STATE_FILE).is_file()
 
     @contextlib.contextmanager
     def locked(self) -> Iterator[_Txn]:
-        prepare_state_dir(self.directory)
+        # ``prepare_state_dir`` may return a private subfolder (when the folder we were
+        # given is shared). From here on ``self.directory`` is that effective folder.
+        self.directory = prepare_state_dir(self.directory)
         with _FileLock(self.directory / LOCK_FILE, self._lock_timeout):
             key, version, docs = self._load()
             txn = _Txn(self, key, version, docs)

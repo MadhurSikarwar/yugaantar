@@ -317,12 +317,17 @@ def test_prepare_rejects_a_file(tmp_path):
 
 
 @POSIX_ONLY
-def test_prepare_rejects_group_or_world_access(tmp_path):
+def test_prepare_never_uses_a_world_writable_folder_directly(tmp_path):
+    """Superseded rule: it no longer refuses; it keeps state in a private subfolder instead.
+
+    Full coverage of the policy is in ``test_state_dir_policy.py``.
+    """
     open_dir = tmp_path / "open"
     open_dir.mkdir()
     os.chmod(open_dir, 0o777)
-    with pytest.raises(IntegrityError):
-        prepare_state_dir(open_dir)
+    effective = prepare_state_dir(open_dir)
+    assert effective != open_dir and effective.parent == open_dir
+    assert oct(effective.stat().st_mode & 0o777) == "0o700"
 
 
 @POSIX_ONLY

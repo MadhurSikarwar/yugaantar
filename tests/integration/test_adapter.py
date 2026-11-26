@@ -221,6 +221,54 @@ def test_an_empty_key_file_from_an_interrupted_first_setup_does_not_block_setup(
     assert adapter.call(op="read", actor="maya", asset="brief", request_id="r") == {"decision": "allow", "body": "demo note"}
 
 
+# --- state directory permissions (c3 and c4: setup failed on Linux in a 0755 folder) -----------------------------
+
+POSIX_ONLY = pytest.mark.skipif(sys.platform == "win32", reason="POSIX permissions and ownership")
+
+
+@POSIX_ONLY
+def test_setup_works_when_the_state_folder_already_exists_as_0755(tmp_path):
+    folder = tmp_path / "created-by-the-harness"
+    folder.mkdir()
+    os.chmod(folder, 0o755)  # what `mkdir -p` gives with the default umask
+    adapter = Adapter(folder)
+    provision(adapter)
+    assert adapter.call(op="read", actor="maya", asset="brief", request_id="r1") == {"decision": "allow", "body": "demo note"}
+    assert (folder / "state.json").is_file()
+    assert (folder.stat().st_mode & 0o777) == 0o700
+
+
+@POSIX_ONLY
+def test_setup_works_when_the_state_folder_is_a_shared_sticky_folder_like_tmp(tmp_path):
+    shared = tmp_path / "fake-tmp"
+    shared.mkdir()
+    os.chmod(shared, 0o1777)
+    adapter = Adapter(shared)
+    provision(adapter)
+    assert adapter.call(op="read", actor="maya", asset="brief", request_id="r1") == {"decision": "allow", "body": "demo note"}
+    assert adapter.call(op="revoke", actor="maya") == {}
+    assert adapter.call(op="read", actor="maya", asset="brief", request_id="r2") == {"decision": "deny"}
+    private = shared / f"track4-state-{os.getuid()}"
+    assert (private / "state.json").is_file() and (private.stat().st_mode & 0o777) == 0o700
+    assert not (shared / "state.json").exists()
+    assert (shared.stat().st_mode & 0o7777) == 0o1777  # the shared folder itself was never chmodded
+
+
+@POSIX_ONLY
+def test_the_fallback_folder_is_used_when_the_variable_is_unset(tmp_path):
+    fake_tmp = tmp_path / "tmpdir"
+    fake_tmp.mkdir()
+    (fake_tmp / "track4-state").mkdir()
+    os.chmod(fake_tmp / "track4-state", 0o755)
+    env = {k: v for k, v in os.environ.items() if k != "TRACK4_STATE_DIR"}
+    env["TMPDIR"] = str(fake_tmp)  # tempfile.gettempdir() honours TMPDIR on POSIX
+    done = subprocess.run(
+        [sys.executable, "-B", str(ENTRY)], input=json.dumps({"op": "setup", "owners": {"a": "u"}, "contents": {"a": "b"}}).encode(),
+        capture_output=True, cwd=REPO_ROOT, env=env, timeout=60,
+    )
+    assert done.returncode == 0 and json.loads(done.stdout) == {"ready": True}, done.stderr
+
+
 # --- tampering ------------------------------------------------------------------------------------------
 
 

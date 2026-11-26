@@ -46,10 +46,12 @@ def build_default_dependencies(state_dir: Path | None = None) -> Dependencies:
 
     def audit_factory() -> AuditSink:
         # Called while the store lock is held (see t4.service), so creating the
-        # audit directory and its signing key cannot race.
-        prepare_state_dir(directory)
+        # audit directory and its signing key cannot race. ``store.directory`` is the
+        # effective folder (a private subfolder when the configured one is shared);
+        # preparing it again is idempotent.
+        effective = prepare_state_dir(store.directory)
         module = _import("t4.audit.log")
-        audit_dir = directory / AUDIT_SUBDIR
+        audit_dir = effective / AUDIT_SUBDIR
         try:
             signer = module.load_or_create_signer(audit_dir)
             return module.AuditLog(audit_dir, signer)
