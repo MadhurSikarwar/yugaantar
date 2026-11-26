@@ -35,9 +35,9 @@ python3.12 -m venv .venv
 python -m pip install -r requirements.txt -r requirements-dev.txt
 ```
 
-All state, key, node and authority directories are created **outside the repository**. The adapter uses `TRACK4_STATE_DIR`, or the OS temp directory if it's unset. No key is stored in the repository. On Linux and macOS, the state directory must not be readable by other users: create it with `mkdir -m 700` (or let `mktemp -d` do it). A `0755` directory is refused.
+All state, key, node and authority directories are created **outside the repository**. The adapter uses `TRACK4_STATE_DIR`, or the OS temp directory if it's unset. No key is stored in the repository. On Linux and macOS, a state folder we own is made private (`chmod 0700`). In a shared folder like `/tmp`, the state goes into our own `track4-state-<uid>` subfolder. So point `TRACK4_STATE_DIR` at a dedicated folder, never at a folder holding other files (`docs/CONTRACT_FACTS.md`, section 5b).
 
-These steps were followed on a clean WSL Ubuntu 24.04 machine with Python 3.12.3, with the repository read-only. Results are in `docs/evidence-sheet.md`, run L1.
+These steps were followed from a fresh GitHub clone on WSL Ubuntu 24.04 with Python 3.12.3, with the repository read-only. Results are in `docs/evidence-sheet.md`, run L3.
 
 ## Run
 
