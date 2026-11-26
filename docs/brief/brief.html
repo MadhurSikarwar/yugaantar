@@ -55,15 +55,16 @@ operator: verify-log (pinned head + key) · explain · detector over our own ver
 <h2>Five-minute fallback video</h2>
 <p><b>Video link:</b> <span class="todo">[public URL]</span> &nbsp; <b>Duration:</b> 5 minutes &nbsp; <b>Access checked:</b> <span class="todo">[date, opened while logged out]</span></p>
 
-<p><b>Observed outcome.</b> These results are from a local merge run on 2026-11-26, Windows, Python 3.13, <code>pqcrypto</code> 0.4.0.
+<p><b>Observed outcome.</b> These are from a clean Linux run on 2026-11-26: WSL Ubuntu 24.04, Python 3.12.3, <code>pqcrypto</code> 0.4.0. The run followed the README on merge <code>a41f5d9</code> = c1 <code>f04d76a</code>, c2 <code>445f30a</code>, c3 <code>403275a</code>, c4 <code>bcebb73</code>, with the repository read-only.
 <ul>
-<li>The official validator exits 0, and 541 tests pass.</li>
-<li>Our PRD section 8 red-team suite: 239 checks passed, 0 failed.</li>
-<li>Simulated revocation across 4 nodes: last-node enforcement at most 50 s against a 62 s bound (r + T + s), 0 violations.</li>
-<li>Cold-process latency: p50 170 to 181 ms and p95 at most 280 ms per operation.</li>
+<li>The official validator exits 0, and 564 tests pass.</li>
+<li>The one-command demo passes all its checks.</li>
+<li>Our PRD section 8 red-team suite: 239 checks passed, 0 failed. A teammate's Docker run (Python 3.12.16, network off) matches.</li>
+<li>Cold-process latency: p50 91 to 112 ms, p95 at most 164 ms, peak memory 20 MB.</li>
+<li>Simulated revocation across 4 nodes, 20 runs: last node enforced after at most 58 s against a 62 s bound, 0 violations.</li>
 <li>Detector: 22/22 practice events correct. On 12,060 held-out generated events, 95.3% of labels are correct, with 11 false alerts per 1,000 benign events.</li>
 </ul>
-Evidence and commands are in <code>docs/evidence-sheet.md</code>.</p>
+Run details and commands are in <code>docs/evidence-sheet.md</code>.</p>
 </section>
 
 <section class="page">
@@ -109,9 +110,9 @@ Evidence and commands are in <code>docs/evidence-sheet.md</code>.</p>
 <ul>
 <li><b>No caller authentication in the adapter.</b> Anyone can claim any actor.</li>
 <li>Whoever can write a directory can read its signing key and rebuild its log. A pin exposes this only up to the pinned entry. Entries after the newest checkpoint or pin can be cut unnoticed. A full rollback of a state directory is not detectable locally.</li>
-<li><b>Open review findings:</b> long identifiers can grow the state file until every call fails (high, open). The authority does not authenticate its operator, including for rotation. Backups are not encrypted, and a restore loses newer enrolments and grants.</li>
+<li><b>Remaining after review fixes:</b> about 500,000 revocations of new names fill the state store, after which new revocations fail (reads keep working). The authority does not authenticate its operator, including for rotation. Backups are not encrypted, and a restore loses newer enrolments and grants. An accepted list may be missing from a node log if the write fails.</li>
 <li>No transport encryption and no forward secrecy (goals 9 to 12 are not supported). A reused <code>protected_read</code> challenge is accepted.</li>
-<li>The detector is measured only on synthetic data: 22 practice rows cannot establish accuracy, and the held-out set reflects our own assumptions. Not yet run on Linux.</li>
+<li>The detector is measured only on synthetic data: 22 practice rows cannot establish accuracy, and the held-out set reflects our own assumptions. Linux was tested locally and in Docker, not on the organizer sandbox.</li>
 </ul>
 <p><b>Largest remaining risk:</b> the adapter cannot tell who is calling. Strong identity exists only where devices sign their requests.</p>
 </section>
