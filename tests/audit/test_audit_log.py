@@ -197,6 +197,49 @@ def test_append_refuses_a_truncated_log(folder, log):
         log.entries()
 
 
+def _tamper_request_id(folder, old: str, new: str) -> None:
+    """Change one entry's content, in place, WITHOUT recomputing its stored hash --
+    the simplest possible non-tail tamper: no signing key, no rehashing."""
+    path = folder / LOG_NAME
+    data = path.read_bytes().replace(f'"{old}"'.encode(), f'"{new}"'.encode())
+    path.write_bytes(data)
+
+
+def test_append_catches_a_tamper_before_any_checkpoint_exists(folder, log):
+    """A non-tail tamper is caught on the very next append even with zero checkpoints
+    written yet (the window reaches genesis when the log is still this short)."""
+    for number in range(3):  # checkpoint_every=4: no checkpoint written yet
+        add(log, f"r{number}")
+    _tamper_request_id(folder, "r1", "zz1")
+    with pytest.raises(AuditIntegrityError):
+        add(log, "r9")
+
+
+def test_append_catches_a_tamper_since_the_second_newest_checkpoint(folder, log):
+    """A non-tail tamper within roughly the last two checkpoint intervals is caught on
+    the very next append -- this is the fix for the audit finding: previously only the
+    newest 1-2 entries were ever re-checked by a live append."""
+    for number in range(9):  # checkpoints at seq 4 and 8 (checkpoint_every=4)
+        add(log, f"r{number}")
+    _tamper_request_id(folder, "r4", "zz4")  # seq 5: just after the first checkpoint
+    with pytest.raises(AuditIntegrityError):
+        add(log, "r9")
+
+
+def test_append_does_not_catch_an_older_tamper_but_verify_still_does(folder, log):
+    """Honest limit, not a bug: a tamper older than the live window (more than roughly
+    two checkpoint intervals back) is NOT caught by a live append -- only a full chain
+    walk (verify()/verify-log, explain, find) catches it. This is the documented,
+    bounded-cost tradeoff in AuditLog._head_of_complete_log's docstring."""
+    for number in range(13):  # checkpoints at seq 4, 8 and 12; window anchors at seq 8
+        add(log, f"r{number}")
+    _tamper_request_id(folder, "r0", "zz0")  # seq 1: well before the anchor at seq 8
+    add(log, "r13")  # does NOT raise: outside the live window
+    assert not log.verify().ok
+    with pytest.raises(AuditIntegrityError):
+        log.entries()
+
+
 def test_fragment_is_kept_when_earlier_records_are_damaged(folder, log):
     add(log)
     add(log, "r2")
