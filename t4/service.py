@@ -60,6 +60,7 @@ from t4.validate_in import (
     SetupRequest,
 )
 
+SETUP_POLICY_ENV = "TRACK4_SETUP_POLICY"  # "once" refuses a second setup; anything else keeps the contract's reset
 RULE_SETUP = "ADM-SETUP"
 RULE_REVOKE = "ADM-REVOKE"
 RULE_CRYPTO_REJECTED_KEY = "CRY-KEY-REJECTED"
@@ -148,6 +149,12 @@ class VaultService:
     def setup(self, request: SetupRequest) -> dict:
         with self._deps.store.locked() as txn:
             state = VaultState.load(txn)
+            if state.is_provisioned and os.environ.get(SETUP_POLICY_ENV, "").strip().lower() == "once":
+                # Opt-in deployment guard. The official contract lets ``setup`` run again and start a
+                # new generation (open organizer question 6), so the default stays "reset". A
+                # deployment that must not be wiped by a stray or hostile ``setup`` sets
+                # TRACK4_SETUP_POLICY=once: the operator then resets by removing the state folder.
+                raise InputError("setup is locked: this state is already initialized")
             state.initialize(request.owners, request.contents, request.disabled)
             self._audit().append(
                 actor=UNATTRIBUTED,
@@ -287,7 +294,9 @@ class VaultService:
                 )
                 raise InputError("public key rejected") from None
             finally:
-                shared_secret = b""  # best effort: drop our reference to the secret
+                # This only drops our reference so the object can be collected. Python bytes cannot be
+                # erased in place, so it is NOT zeroization; see docs/threat-model.md (secret lifetime).
+                shared_secret = b""
 
             self._audit().append(
                 actor=request.actor,

@@ -153,7 +153,9 @@ def test_verification_streams_it_does_not_read_the_log_into_memory(big, monkeypa
     monkeypatch.setattr(audit_verify, "read_bytes",
                         lambda path: (calls.append(Path(path).name), real(path))[1])
     assert verify_log(folder).ok
-    assert LOG_NAME not in calls  # only the small checkpoint and key files are read whole
+    # Neither the log nor the checkpoint file (about as large as the log: each signature is 6.6 KB
+    # of hex) is read whole; only the small public key is.
+    assert set(calls) == {"audit.pub"}
 
 
 def test_an_append_during_verification_does_not_confuse_it(big, monkeypatch):

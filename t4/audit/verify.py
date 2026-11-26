@@ -40,7 +40,6 @@ from t4.audit.log import (
     locked,
     parse_line,
     read_bytes,
-    split_records,
 )
 
 
@@ -79,13 +78,13 @@ def verify_log(
         if seq is not None:
             bad.append(seq)
 
-    checkpoint_data = stored_key = b""
-    log_size = 0
+    stored_key = b""
+    checkpoint_size = log_size = 0
     if not folder.is_dir():
         fail("no audit log directory")
     else:
         try:
-            checkpoint_data, stored_key, log_size = _snapshot(folder, warnings)
+            checkpoint_size, stored_key, log_size = _snapshot(folder, warnings)
         except OSError:
             fail("audit files could not be read")
         except AuditError:
@@ -99,11 +98,16 @@ def verify_log(
         warnings.append("public key not pinned: it was read from the log directory")
 
     # ---- checkpoints and the pinned head: signatures first, hash comparison after the stream
-    checkpoint_lines, checkpoint_partial = split_records(checkpoint_data)
-    if checkpoint_partial:
-        warnings.append("incomplete trailing checkpoint ignored")
+    # Streamed one record at a time: each signature is about 6.6 KB of hex, so this file can be as
+    # large as the log itself and must not be held in memory.
+    checkpoint_count = 0
     to_compare: list[tuple[str, int, str, bool]] = []  # (source, seq, hash, is_checkpoint)
-    for number, line in enumerate(checkpoint_lines, start=1):
+    for line, complete in _read_lines(folder / CHECKPOINT_NAME, checkpoint_size):
+        if not complete:
+            warnings.append("incomplete trailing checkpoint ignored")
+            break
+        checkpoint_count += 1
+        number = checkpoint_count
         try:
             record = json.loads(line.decode("ascii"))
             seq, head_hash, ts = record["seq"], record["hash"], record["ts"]
@@ -214,7 +218,7 @@ def verify_log(
             if is_checkpoint:
                 valid_checkpoints += 1
 
-    if not checkpoint_lines and pinned_head is None:
+    if checkpoint_count == 0 and pinned_head is None:
         warnings.append("no signed checkpoint or pinned head: a removed tail cannot be detected")
     elif good > covered:
         warnings.append(f"{good - covered} newest entries are not covered by a checkpoint or pin")
@@ -233,19 +237,49 @@ def verify_log(
     )
 
 
-def _snapshot(folder: Path, warnings: list[str]) -> tuple[bytes, bytes, int]:
-    """Read the small files and record the log's size, under the lock when it can be taken.
+def _size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except FileNotFoundError:
+        return 0
 
-    Returns ``(checkpoints, public key, log size in bytes)``. The log is append-only, so reading
-    exactly that many bytes later is a consistent view of the log as it was at this moment.
+
+def _read_lines(path: Path, limit: int):
+    """Yield ``(line, complete)`` for the first ``limit`` bytes of ``path``, one line at a time.
+
+    ``complete`` is False only for an unterminated last line, after which nothing more is read.
+    A missing file yields nothing.
+    """
+    try:
+        handle = path.open("rb")
+    except FileNotFoundError:
+        return
+    consumed = 0
+    with handle:
+        while consumed < limit:
+            raw = handle.readline()
+            if not raw:
+                break
+            consumed += len(raw)
+            if consumed > limit:  # written after the snapshot: not part of this check
+                raw = raw[: len(raw) - (consumed - limit)]
+                consumed = limit
+            complete = raw.endswith(b"\n")
+            yield (raw[:-1] if complete else raw), complete
+            if not complete:
+                break
+
+
+def _snapshot(folder: Path, warnings: list[str]) -> tuple[int, bytes, int]:
+    """Take a consistent snapshot, under the lock when it can be taken.
+
+    Returns ``(checkpoint file size, public key, log size)``: the two sizes in bytes. Both files
+    are append-only, so reading exactly that many bytes later is a consistent view of them as they
+    were at this moment, even while a writer keeps appending.
     """
 
-    def take() -> tuple[bytes, bytes, int]:
-        try:
-            size = (folder / LOG_NAME).stat().st_size
-        except FileNotFoundError:
-            size = 0
-        return (read_bytes(folder / CHECKPOINT_NAME), read_bytes(folder / PUBLIC_KEY_NAME), size)
+    def take() -> tuple[int, bytes, int]:
+        return (_size(folder / CHECKPOINT_NAME), read_bytes(folder / PUBLIC_KEY_NAME), _size(folder / LOG_NAME))
 
     try:
         with locked(folder):
