@@ -79,6 +79,8 @@ def verify_log(
             log_data, checkpoint_data, stored_key = _read_files(folder, warnings)
         except OSError:
             fail("audit files could not be read")
+        except AuditError:
+            fail("audit log is busy: verification needs a consistent read, try again")
 
     # ---- entry chain ---------------------------------------------------------
     lines, partial = split_records(log_data)
@@ -198,9 +200,13 @@ def _read_files(folder: Path, warnings: list[str]) -> tuple[bytes, bytes, bytes]
     try:
         with locked(folder):
             return read()
-    except (OSError, AuditError):
-        warnings.append("checked without the audit lock")  # e.g. a read-only copy
+    except OSError:
+        # The lock file cannot be opened (for example a read-only copy): nothing is writing
+        # to it either, so an unlocked read is consistent.
+        warnings.append("checked without the audit lock")
         return read()
+    # A lock TIMEOUT (AuditError) is deliberately not caught here: a writer is active, and an
+    # unlocked read could be torn mid-append, so it must not be reported as a verdict.
 
 
 def _signature_ok(public_key: bytes, message: bytes, signature: bytes) -> bool:

@@ -37,7 +37,7 @@ from typing import Callable, Iterator
 from t4.node.common import NodeError, canonical, check_text, check_time
 from t4.node.state import FileStore, atomic_write, file_lock
 
-BACKUP_NAME = re.compile(r"backup-(\d{8})\.json")
+BACKUP_NAME = re.compile(r"backup-(\d{8,})\.json")  # 8 digits are the minimum, not a ceiling
 REMOVAL_SETS = ("revoked_devices", "revoked_actors", "revoked_keys", "removed_grants")
 Fault = Callable[[str], None]
 
@@ -168,8 +168,9 @@ class Vault:
     def _newest_good(self, key: bytes, subject: str, record_name: str) \
             -> tuple[dict, list[str]]:
         damaged: list[str] = []
+        # Newest first by NUMBER: names of different widths do not sort correctly as text.
         names = sorted((p for p in self.backup_dir.iterdir() if BACKUP_NAME.fullmatch(p.name)),
-                       reverse=True)
+                       key=lambda p: int(BACKUP_NAME.fullmatch(p.name).group(1)), reverse=True)
         for path in names:
             try:
                 body = _unseal(key, BACKUP_LABEL, path.read_bytes())
@@ -221,6 +222,14 @@ def _apply_removals(record: dict, removals: dict, backup_time: float,
         for grant, at in removals["removed_grants"].items():
             if at >= backup_time:
                 record["grants"].pop(grant, None)
+        # A readable current state is evidence too. Grants only ever leave by being removed, so
+        # one that is in the backup but not in the current state was removed after the backup,
+        # even when no vault ledger recorded it (an authority created without a vault).
+        # Restoring must not give that access back. Grants added after the backup stay lost
+        # (documented); only removals are merged here, as for revocations.
+        if current is not None and isinstance(current.get("grants"), dict):
+            for grant in [g for g in record["grants"] if g not in current["grants"]]:
+                del record["grants"][grant]
     if "journal" in record:
         record["journal"] = None
     if current is not None:

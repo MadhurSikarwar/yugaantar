@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from t4.node.common import (KeyLog, NodeError, Signer, b64d, b64e, canonical, check_int,
-                            check_text, check_time, signed_envelope)
+                            check_text, check_time, require_record, signed_envelope)
 from t4.node.state import FileStore
 
 LIST_TYPE = "revocation_list"
@@ -30,8 +30,19 @@ LIST_FIELDS = frozenset({"type", "seq", "issued_at", "devices", "revoked_devices
 RECORD = "authority"
 
 
-def check_public_key(public_key: str) -> None:
-    if not 0 < len(b64d(public_key)) <= 8192:
+def check_public_key(public_key: str, expected_size: int | None = None) -> None:
+    """Reject keys that cannot be this signature scheme's keys.
+
+    ``expected_size`` is the signer's real public-key size (the real ML-DSA-65 wrapper declares
+    ``PUBLIC_KEY_SIZE``); a key of any other size can never verify a request, so enrolling it
+    would only break that device. A signer that declares no size (a test double) keeps the
+    generic bound.
+    """
+    size = len(b64d(public_key))
+    if expected_size is not None:
+        if size != expected_size:
+            raise NodeError("invalid public key")
+    elif not 0 < size <= 8192:
         raise NodeError("invalid public key")
 
 
@@ -62,7 +73,7 @@ class Authority:
 
     def _record(self) -> dict:
         with self.store.locked() as txn:
-            record = txn.get(RECORD)
+            record = require_record(txn.get(RECORD), "authority")
         if record is None:
             raise NodeError("not an authority directory")
         return record
@@ -92,10 +103,10 @@ class Authority:
     def enroll(self, device_id: str, owner: str, public_key: str, now: float) -> None:
         check_text(device_id)
         check_text(owner)
-        check_public_key(public_key)
+        check_public_key(public_key, getattr(self.signer, "PUBLIC_KEY_SIZE", None))
         check_time(now)
         with self.store.locked() as txn:
-            record = txn.get(RECORD)
+            record = require_record(txn.get(RECORD), "authority")
             if device_id in record["devices"] or device_id in record["revoked_devices"]:
                 raise NodeError("device ID was already used")
             if owner in record["revoked_actors"]:
@@ -118,11 +129,11 @@ class Authority:
         """
         check_text(device_id)
         check_int(version)
-        check_public_key(public_key)
+        check_public_key(public_key, getattr(self.signer, "PUBLIC_KEY_SIZE", None))
         check_time(activate_at)
         check_time(now)
         with self.store.locked() as txn:
-            record = txn.get(RECORD)
+            record = require_record(txn.get(RECORD), "authority")
             device = record["devices"].get(device_id)
             if device is None or device_id in record["revoked_devices"] \
                     or device["owner"] in record["revoked_actors"]:
@@ -162,7 +173,7 @@ class Authority:
         check_time(now)
         failure: Exception | None = None
         with self.store.locked() as txn:
-            record = txn.get(RECORD)
+            record = require_record(txn.get(RECORD), "authority")
             at = record[set_name].get(item, max(now, record["last_issued_at"]))
             record[set_name][item] = at
             txn.put(RECORD, record)
@@ -190,7 +201,7 @@ class Authority:
         if approval_id:
             check_text(approval_id)
         with self.store.locked() as txn:
-            record = txn.get(RECORD)
+            record = require_record(txn.get(RECORD), "authority")
             if actor in record["revoked_actors"]:
                 raise NodeError("actor is revoked")
             record["grants"][grant_key(actor, asset)] = {
@@ -205,7 +216,7 @@ class Authority:
         check_time(now)
         failure: Exception | None = None
         with self.store.locked() as txn:
-            record = txn.get(RECORD)
+            record = require_record(txn.get(RECORD), "authority")
             key = grant_key(actor, asset)
             record["grants"].pop(key, None)
             txn.put(RECORD, record)
@@ -226,7 +237,7 @@ class Authority:
         """Sign the current state. The new number is stored before it is returned."""
         check_time(now)
         with self.store.locked() as txn:
-            record = txn.get(RECORD)
+            record = require_record(txn.get(RECORD), "authority")
             # Time-based numbering keeps rising even after restoring an old backup.
             seq = max(record["list_seq"] + 1, int(now * 1000))
             issued_at = max(now, record["last_issued_at"])

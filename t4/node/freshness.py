@@ -20,7 +20,7 @@ from typing import Any, Mapping
 
 from t4.node.authority import LIST_FIELDS, LIST_TYPE
 from t4.node.common import (KeyLog, NodeError, Signer, b64d, b64e, canonical, check_int,
-                            check_text, check_time, open_envelope)
+                            check_text, check_time, open_envelope, require_record)
 from t4.node.state import FileStore
 
 RECORD = "node"
@@ -72,7 +72,7 @@ class Node:
     def owners(self) -> tuple[str, dict[str, str]]:
         """(node ID, {asset: owner}) as provisioned. No file contents."""
         with self.store.locked() as txn:
-            record = txn.get(RECORD)
+            record = require_record(txn.get(RECORD), "node")
         return record["node_id"], record["owners"]
 
     def record_event(self, *, actor: str, action: str, target: str, decision: str,
@@ -96,7 +96,7 @@ class Node:
     def _accept(self, signed_list: Any, now: float) -> bool:
         check_time(now)
         with self.store.locked() as txn:
-            record = txn.get(RECORD)
+            record = require_record(txn.get(RECORD), "node")
             rule, seq = self._judge(record, signed_list, now)
             accepted = rule == "NODE-LIST-ACCEPTED"
             if accepted:

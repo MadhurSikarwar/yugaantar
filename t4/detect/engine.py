@@ -112,14 +112,16 @@ class Result:
 
 
 def _alert(rule: str, severity: str, trigger: Event, events: Sequence[Event],
-           explanation: str, cfg: DetectConfig) -> Alert:
+           explanation: str, cfg: DetectConfig, evidence: Sequence[Event] = ()) -> Alert:
+    """``evidence`` are events the alert cannot be raised without: it is emitted no earlier than
+    the latest of their receipt times (out-of-order delivery can bring the trigger first)."""
     ordered = sorted(events, key=lambda e: (e.corrected_time, e.receipt_index))
     ids = tuple(e.event_id for e in ordered)
     services: list[str] = []
     for event in ordered:
         if event.target_service not in services:
             services.append(event.target_service)
-    digest = hashlib.sha256("\x1f".join((rule,) + ids).encode("utf-8")).hexdigest()[:16]
+    digest = hashlib.sha256("\x1f".join((rule,) + ids).encode("utf-8", "surrogatepass")).hexdigest()[:16]
     return Alert(
         alert_id=f"ALR-{digest}",
         rule=rule,
@@ -127,7 +129,7 @@ def _alert(rule: str, severity: str, trigger: Event, events: Sequence[Event],
         identity=trigger.actor,
         services=tuple(services),
         event_ids=ids,
-        emitted_at=iso_z(trigger.received_time),
+        emitted_at=iso_z(max(e.received_time for e in (trigger, *evidence))),
         explanation=explanation,
         order_uncertain=rules.pair_uncertain(ordered, cfg),
     )
@@ -179,7 +181,7 @@ def analyze(events: Iterable[Event], approvals: Mapping[str, Approval],
                     cfg))
                 pending.append(_PendingReview(event, cfg.review_followups))
         else:
-            revoke = rules.match_revoke(event, approvals)
+            revoke = rules.match_revoke(event, approvals, cfg)
             if revoke is not None:
                 put(event, "approved_change", "DET-APPROVED-CHANGE",
                     f"{event.actor} {event.role_before} -> {event.role_after} follows {revoke.approval_id}")
@@ -208,7 +210,7 @@ def analyze(events: Iterable[Event], approvals: Mapping[str, Approval],
                 "DET-REVIEW-AFTER-ROLE-CHANGE", "medium", event, [change, event],
                 f"{event.actor} used role {event.role_before} ({event.action} on {event.target_service}, "
                 f"{event.outcome}) after the unapproved change in {change.event_id}. Review this access.",
-                cfg))
+                cfg, evidence=[change]))
 
     # Step 4: denials and service edges.
     candidates: list[Event] = []

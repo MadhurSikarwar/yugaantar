@@ -60,6 +60,9 @@ UNGRANT_ACTIONS = frozenset({"ungrant", "revoke_grant", "remove_grant"})
 NO_ROLE = "user"
 AUTHORITY_SERVICE = "authority"
 UNVERIFIED_ACTOR = "(unverified)"
+# One shared session for every request that did not prove its actor: the claimed device_id is
+# attacker-chosen, so grouping by it would let a prober avoid movement chaining by changing it.
+UNVERIFIED_SESSION = "(unverified)"
 # Key events other than grants are routine administration by the authority.
 ADMIN_ACTIONS = frozenset({"enroll", "rotate", "revoke_device", "revoke_actor"})
 LOG_SUBDIR = "log"
@@ -67,6 +70,11 @@ LOG_SUBDIR = "log"
 # at this time": attributing these to the signer would let anyone who captures
 # one request frame its signer (c3-to-c4-002).
 NOT_FROM_SIGNER_RULES = frozenset({"NODE-WRONG-NODE", "NODE-REPLAY", "NODE-EXPIRED"})
+# The node checks `actor == device owner` only AFTER the wrong-node and revoked-device/actor
+# checks. A request denied at one of these rules (or at the owner check itself) proves the
+# signature, not that the claimed actor is the signer's owner, so the actor name must not be
+# attributed: a rogue enrolled device can name any victim (SA-006).
+ACTOR_UNPROVEN_RULES = frozenset({"NODE-DEVICE-REVOKED", "NODE-ACTOR-REVOKED", "NODE-OWNER-MISMATCH"})
 
 
 class ExportError(Exception):
@@ -206,7 +214,8 @@ def convert(node_logs: Mapping[str, Sequence[dict]], key_events: Sequence[dict],
             elif action in UNGRANT_ACTIONS:
                 rows.append({**base, "actor": subject, "action": "role_change",
                              "role_before": read_role(asset), "role_after": NO_ROLE})
-                grants.pop((subject, asset), None)
+                if base["outcome"] == "success":
+                    grants.pop((subject, asset), None)
             else:
                 rows.append({**base, "actor": entry["actor"], "action": action,
                              "role_before": NO_ROLE, "role_after": NO_ROLE, "approval_id": ""})
@@ -216,7 +225,8 @@ def convert(node_logs: Mapping[str, Sequence[dict]], key_events: Sequence[dict],
             event_id = f"{node_id}#{entry['seq']}"
             device = _detail(entry, "device_id") or "no-device"
             verified = entry.get("detail", {}).get("signature_verified") is True
-            if verified and entry.get("rule") in NOT_FROM_SIGNER_RULES:
+            if verified and (entry.get("rule") in NOT_FROM_SIGNER_RULES
+                             or entry.get("rule") in ACTOR_UNPROVEN_RULES):
                 # A genuine signature reused where or when its signer did not
                 # send it (captured and forwarded to another node, replayed,
                 # or delayed past the window). The node denied it; it proves
@@ -237,7 +247,8 @@ def convert(node_logs: Mapping[str, Sequence[dict]], key_events: Sequence[dict],
                 "source_clock_offset_ms": 0, "actor": actor, "source_service": source,
                 "target_service": f"{node_id}/{asset}", "action": entry["action"],
                 "role_before": role, "role_after": role, "outcome": entry["decision"],
-                "approval_id": "", "session_id": device, "correlation_id": entry.get("request_id", ""),
+                "approval_id": "", "session_id": device if actor != UNVERIFIED_ACTOR else UNVERIFIED_SESSION,
+                "correlation_id": entry.get("request_id", ""),
             })
         request_ids[event_id] = entry.get("request_id", "")
     rows = [_fit_row(row) for row in rows]
@@ -249,7 +260,7 @@ def baseline_from_owners(owners: Mapping[str, Mapping[str, str]]) -> dict[str, f
     out: dict[str, set[str]] = {}
     for node_id, assets in owners.items():
         for asset, owner in assets.items():
-            out.setdefault(owner, set()).add(f"{node_id}/{asset}")
+            out.setdefault(fit_field(owner), set()).add(fit_field(f"{node_id}/{asset}"))
     return {actor: frozenset(targets) for actor, targets in out.items()}
 
 

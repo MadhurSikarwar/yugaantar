@@ -26,6 +26,8 @@ KEY_NAME = "state.key"
 STATE_NAME = "state.json"
 LOCK_NAME = "state.lock"
 LOCK_TIMEOUT = 15.0
+MAX_STATE_BYTES = 64 * 1024 * 1024  # a larger file is refused when LOADING
+MAX_WRITE_BYTES = 48 * 1024 * 1024  # a larger state is refused when WRITING (headroom below the load limit)
 
 
 class IntegrityError(NodeError):
@@ -183,10 +185,16 @@ class FileStore:
 
     def _write(self, key: bytes, version: int, records: dict) -> None:
         document = {"version": version, "records": records, "tag": _tag(key, version, records)}
-        atomic_write(self.directory / STATE_NAME, canonical(document))
+        encoded = canonical(document)
+        if len(encoded) > MAX_WRITE_BYTES:
+            # Never write a state that could not be loaded back: keep the old, loadable one.
+            raise NodeError("state would exceed the size limit")
+        atomic_write(self.directory / STATE_NAME, encoded)
 
     def _load(self, key: bytes) -> tuple[int, dict]:
         try:
+            if (self.directory / STATE_NAME).stat().st_size > MAX_STATE_BYTES:
+                raise IntegrityError("state file too large")
             document = json.loads((self.directory / STATE_NAME).read_bytes())
             version, records, tag = document["version"], document["records"], document["tag"]
             valid = hmac.compare_digest(tag.encode("ascii"), _tag(key, version, records).encode("ascii"))

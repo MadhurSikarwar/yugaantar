@@ -48,6 +48,7 @@ COLUMNS: tuple[str, ...] = (
 )
 
 MAX_FIELD_CHARS = 4096
+MAX_OFFSET_MS = 10**9  # about 11.6 days; larger values are not a clock offset
 MAX_FILE_BYTES = 256 * 1024 * 1024
 
 
@@ -140,6 +141,8 @@ def _event_from_row(row: Mapping[str, str], index: int, line: int) -> Event:
         offset = int(row["source_clock_offset_ms"].strip())
     except ValueError:
         raise ValueError(f"row {line}: source_clock_offset_ms is not an integer") from None
+    if abs(offset) > MAX_OFFSET_MS:
+        raise ValueError(f"row {line}: source_clock_offset_ms is out of range")
     return Event(
         event_id=row["event_id"],
         event_time_utc=row["event_time_utc"],

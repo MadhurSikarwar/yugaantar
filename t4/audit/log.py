@@ -77,6 +77,18 @@ TEXT_FIELDS = ("actor", "action", "target", "decision", "rule", "request_id")
 ENTRY_FIELDS = frozenset(TEXT_FIELDS) | {"seq", "ts", "detail", "hash"}
 
 _LOCK_TIMEOUT_S = 6.0
+
+# How much of the history a live append re-hashes (see ``AuditLog._head_of_complete_log``).
+# Re-hashing everything on every append is O(log size) per request, which does not scale to
+# a log an attacker can make large, so the cost is tiered and bounded by file size:
+#   * log at most this size: the WHOLE chain is re-checked on every append;
+#   * larger, at most FULL_CHECK_AT_CHECKPOINT_BYTES: the whole chain is re-checked once per
+#     checkpoint interval (only for logs that checkpoint rarely, i.e. checkpoint_every >= 8);
+#   * otherwise only the recent window is re-checked, and ``head()``/``verify-log`` remain
+#     the way to check older history. ``head()`` always re-checks the whole chain.
+FULL_CHECK_EVERY_APPEND_BYTES = 256 * 1024
+FULL_CHECK_AT_CHECKPOINT_BYTES = 8 * 1024 * 1024
+MIN_PERIODIC_CHECKPOINT_EVERY = 8
 _O_BINARY = getattr(os, "O_BINARY", 0)
 
 
@@ -215,23 +227,32 @@ def _truncate_durably(path: Path, size: int) -> None:
 
 
 def _write_atomically(path: Path, data: bytes) -> None:
-    temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | _O_BINARY, 0o600)
+    # A fresh, unpredictable name created exclusively (O_EXCL): a pre-planted file or symlink
+    # at a guessable name cannot redirect where a signing key is written.
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{os.urandom(6).hex()}.tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_BINARY, 0o600)
     try:
-        view = memoryview(data)
-        while view:
-            view = view[os.write(descriptor, view):]
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-    for attempt in range(50):
         try:
-            os.replace(temporary, path)
-            break
-        except PermissionError:  # Windows: another program briefly has it open.
-            if attempt == 49:
-                raise
-            time.sleep(0.01)
+            view = memoryview(data)
+            while view:
+                view = view[os.write(descriptor, view):]
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        for attempt in range(50):
+            try:
+                os.replace(temporary, path)
+                break
+            except PermissionError:  # Windows: another program briefly has it open.
+                if attempt == 49:
+                    raise
+                time.sleep(0.01)
+    except BaseException:
+        try:
+            os.unlink(temporary)  # never leave a (partial) key file behind
+        except OSError:
+            pass
+        raise
     _fsync_directory(path.parent)
 
 
@@ -434,7 +455,9 @@ class AuditLog:
         """
         try:
             with locked(self.directory):
-                seq, head_hash = self._recover_and_head()
+                # Signing a checkpoint vouches for the chain up to here, so check ALL of it
+                # first: never sign on top of history that has been edited.
+                seq, head_hash = self._recover_and_head(full=True)
                 if self.signer is None:
                     return {"seq": seq, "hash": head_hash, "ts": self._clock(), "sig": None}
                 return self._write_checkpoint(seq, head_hash)
@@ -537,8 +560,11 @@ class AuditLog:
         if checkpoint["hash"] != expected:
             raise AuditIntegrityError("audit log differs from a signed checkpoint")
 
-    def _recover_and_head(self) -> tuple[int, str]:
-        """Repair interrupted writes, check the newest records and return the head."""
+    def _recover_and_head(self, full: bool = False) -> tuple[int, str]:
+        """Repair interrupted writes, check the newest records and return the head.
+
+        ``full`` re-checks the whole chain regardless of size (used by ``head()``).
+        """
         for path in (self.checkpoint_path, self.log_path):
             _lines, partial = _tail(path, 1)
             if partial:
@@ -565,7 +591,52 @@ class AuditLog:
                             "removed_sha256": hashlib.sha256(partial).hexdigest(),
                         },
                     )
-        return self._head_of_complete_log()
+        seq, head_hash = self._head_of_complete_log()
+        if full or self._wants_whole_chain(seq):
+            return self._walk_whole_log()
+        return seq, head_hash
+
+    def _wants_whole_chain(self, seq: int) -> bool:
+        """Whether this append re-checks the whole chain (the cost tiers above)."""
+        try:
+            size = self.log_path.stat().st_size
+        except FileNotFoundError:
+            return False
+        if size <= FULL_CHECK_EVERY_APPEND_BYTES:
+            return True
+        return (
+            self.checkpoint_every >= MIN_PERIODIC_CHECKPOINT_EVERY
+            and (seq + 1) % self.checkpoint_every == 0
+            and size <= FULL_CHECK_AT_CHECKPOINT_BYTES
+        )
+
+    def _walk_whole_log(self) -> tuple[int, str]:
+        """Re-hash every entry from genesis, streaming (no whole-file copy in memory).
+
+        Checks sequence numbers, every entry's hash against its content and predecessor, and
+        the newest signed checkpoint against the entry it names. Signatures are not checked
+        here (``verify-log`` does that); this detects edits to entries without the signing key.
+        """
+        newest = self._newest_checkpoint()
+        previous, seq = GENESIS_HASH, 0
+        try:
+            handle = self.log_path.open("rb")
+        except FileNotFoundError:
+            handle = None
+        if handle is not None:
+            with handle:
+                for raw in handle:
+                    if not raw.endswith(b"\n"):
+                        break  # an unterminated last record is repaired before this point
+                    entry = parse_line(raw[:-1])
+                    if entry["seq"] != seq + 1 or entry["hash"] != entry_hash(entry, previous):
+                        raise AuditIntegrityError(f"audit chain is broken at entry {seq + 1}")
+                    previous, seq = entry["hash"], entry["seq"]
+                    if newest is not None and seq == newest["seq"] and previous != newest["hash"]:
+                        raise AuditIntegrityError("audit log differs from a signed checkpoint")
+        if newest is not None and newest["seq"] > seq:
+            raise AuditIntegrityError("audit log is shorter than a signed checkpoint")
+        return seq, previous
 
     def _head_of_complete_log(self) -> tuple[int, str]:
         """Verify and return the head, re-deriving every entry's hash back through the

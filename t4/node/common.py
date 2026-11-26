@@ -86,6 +86,13 @@ def open_log(directory: str | Path) -> KeyLog:
     return AuditLog(Path(directory), load_or_create_signer(directory), checkpoint_every=1)
 
 
+def require_record(record: Any, kind: str) -> dict:
+    """A directory that holds no record of this kind is the wrong directory, not an empty one."""
+    if record is None:
+        raise NodeError(f"not a {kind} directory")
+    return record
+
+
 def canonical(value: Any) -> bytes:
     """Sorted keys, no spaces, ASCII only, no NaN."""
     return json.dumps(value, sort_keys=True, separators=(",", ":"),
