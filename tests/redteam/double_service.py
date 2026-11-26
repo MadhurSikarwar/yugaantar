@@ -1,4 +1,4 @@
-"""Test double only: a small service used to check that the red-team suite itself works.
+"""Test double only: a small service used to check that the self-attack suite itself works.
 
 This is not the team's adapter and must never be submitted as it. It exists so the
 suite can be shown to pass a service that behaves correctly, and to fail one that
