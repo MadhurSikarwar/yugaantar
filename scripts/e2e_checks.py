@@ -134,6 +134,12 @@ def main():
         check("double head(): no duplicate checkpoint was written", cp_lines <= (896 // 16) + 1, f"{cp_lines} checkpoint lines")
 
         # 5. messaging, two parties, JSON over the wire, fresh process for the receiver
+        try:
+            import cryptography  # noqa: F401  (demo-only package; see requirements-demo.txt)
+            have_cipher = True
+        except ImportError:
+            have_cipher = False
+            print("SKIP messaging: the demo-only 'cryptography' package is not installed")
         code = (
             "import json, sys; sys.path.insert(0, %r)\n"
             "from demo import messaging as m\n"
@@ -149,8 +155,9 @@ def main():
             "    print('REPLAY-ACCEPTED')\n"
             "except m.MessagingError:\n"
             "    print('OK')\n" % str(REPO))
-        r = run("-c", code)
-        check("messaging: round trip over JSON, replay refused", r.stdout.strip() == "OK", (r.stdout + r.stderr).strip()[:150])
+        if have_cipher:
+            r = run("-c", code)
+            check("messaging: round trip over JSON, replay refused", r.stdout.strip() == "OK", (r.stdout + r.stderr).strip()[:150])
         # the adapter must not import the demo layer or the cipher package
         r = run("-c", "import sys; sys.path.insert(0, %r); import track4_service, t4.service; "
                       "print('cryptography' in sys.modules, 'demo.messaging' in sys.modules)" % str(REPO))
