@@ -62,6 +62,11 @@ Each line is a command, and each result has been reproduced (see `docs/evidence-
 | Attacks from PRD section 8 fail | `python tools/selfattack.py --entry track4_service.py --report <out.md>` |
 | Log tampering is detected | `python -m t4.audit.cli --dir <log dir> head --out <pin.json>`, then `verify-log --pin <pin.json>` |
 | Why a request was denied | `python -m t4.audit.cli --dir <log dir> explain <request_id>` |
+| Full audit verification, with a pin kept outside the directory | `python -m t4.audit.cli --dir <log dir> pin init --pin <pin.json>`, later `verify-log --pin <pin.json>`, then `pin advance --pin <pin.json>` (exit 1 on any failure) |
+| State is not older than the audit log (a state file rolled back on its own) | `python -m t4.consistency --state-dir <dir>` (exit 1 if inconsistent) |
+| Storage use and free space | `python -m t4.storage_status --state-dir <dir>` (exit 1 or 2 on low space or large files) |
+| The pinned cryptographic dependencies are installed and untouched | `python scripts/verify_dependencies.py` (exit 1 on a mismatch) |
+| One rotation is logged once, even when the process is killed | `python -m tests.recovery.external_kill --trials 100` (fails on a duplicate) |
 | Revocation reaches every node within `r + T + s` | `python tools/nodes_sim.py --nodes 4 --runs 3 --seed 1` |
 | Rotation and backup survive a crash at every step | `python -m pytest tests/recovery -q` |
 | Detector on the public practice events | `python -m t4.detect.cli evaluate --dir tests/detect/data/practice` |

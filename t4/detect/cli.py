@@ -22,7 +22,9 @@ What it defends against
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -42,6 +44,20 @@ def _paths(args: argparse.Namespace) -> tuple[Path, Path, Path | None]:
     return events, approvals, labels
 
 
+def _config(args: argparse.Namespace):
+    """Default config, with the authorized approvers replaced when the operator names them.
+
+    Names come from ``--approver`` (repeatable) or the ``T4_APPROVERS`` environment variable
+    (comma separated). The change register is never used to name its own approvers.
+    """
+    names = list(getattr(args, "approver", None) or [])
+    if not names:
+        names = [n.strip() for n in os.environ.get("T4_APPROVERS", "").split(",") if n.strip()]
+    if not names:
+        return DEFAULT_CONFIG
+    return dataclasses.replace(DEFAULT_CONFIG, authorized_approvers=frozenset(names))
+
+
 def _dump(obj: object) -> None:
     print(json.dumps(obj, indent=2, sort_keys=True, allow_nan=False))
 
@@ -54,7 +70,7 @@ def cmd_detect(args: argparse.Namespace) -> int:
     events_path, approvals_path, _ = _paths(args)
     events = load_events(events_path)
     started = time.perf_counter()
-    result = engine.analyze(events, load_approvals(approvals_path), DEFAULT_CONFIG)
+    result = engine.analyze(events, load_approvals(approvals_path), _config(args))
     elapsed_ms = (time.perf_counter() - started) * 1000
     if args.json:
         _dump({
@@ -84,7 +100,7 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
         raise ValueError("give --labels or --dir")
     events = load_events(events_path)
     started = time.perf_counter()
-    result = engine.analyze(events, load_approvals(approvals_path), DEFAULT_CONFIG)
+    result = engine.analyze(events, load_approvals(approvals_path), _config(args))
     elapsed_ms = (time.perf_counter() - started) * 1000
     truth = load_labels(labels_path)
     report = metrics.evaluate(events, result.predicted(), truth, result.alerts)
@@ -115,7 +131,7 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
 def cmd_timeline(args: argparse.Namespace) -> int:
     events_path, approvals_path, _ = _paths(args)
     events = load_events(events_path)
-    result = engine.analyze(events, load_approvals(approvals_path), DEFAULT_CONFIG)
+    result = engine.analyze(events, load_approvals(approvals_path), _config(args))
     ordered = sorted(events, key=lambda e: (e.corrected_time, e.receipt_index))
     rows = [{
         "event_id": e.event_id,
@@ -209,6 +225,8 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--dir", help="folder with events.csv, approvals.json (and labels.csv)")
         p.add_argument("--events")
         p.add_argument("--approvals")
+        p.add_argument("--approver", action="append",
+                       help="authorized approver (repeatable; default user-admin, or T4_APPROVERS)")
         if name == "evaluate":
             p.add_argument("--labels")
         if name == "detect":
