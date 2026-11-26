@@ -520,30 +520,62 @@ class AuditLog:
 
     # ---- reading -----------------------------------------------------------------
 
-    def entries(self) -> list[dict]:
-        """All entries, after checking the hash chain. Ignores an incomplete last line."""
+    def iter_entries(self):
+        """Yield every entry in order, checking the hash chain as it goes, one entry in memory.
+
+        The lock is held only to take a snapshot (log size and newest checkpoint). The log is
+        append-only, so reading exactly that many bytes afterwards is a consistent view even if a
+        writer keeps appending; later entries are not part of this pass. An incomplete last line is
+        ignored. The newest checkpoint is compared with the entry it names once the pass reaches
+        it. A broken chain raises ``AuditIntegrityError`` at the first bad entry, so a caller that
+        builds a result list gets no partial answer from a damaged log.
+        """
         try:
             with locked(self.directory):
-                lines, _partial = split_records(read_bytes(self.log_path))
+                try:
+                    size = self.log_path.stat().st_size
+                except FileNotFoundError:
+                    size = 0
                 newest = self._newest_checkpoint()
-        except OSError:
+            handle = self.log_path.open("rb") if size else None
+        except (OSError, FileNotFoundError):
             raise AuditError("audit log could not be read") from None
-        previous = GENESIS_HASH
-        result: list[dict] = []
-        for number, line in enumerate(lines, start=1):
-            entry = parse_line(line)
-            if entry["seq"] != number or entry["hash"] != entry_hash(entry, previous):
-                raise AuditIntegrityError(f"audit chain is broken at entry {number}")
-            previous = entry["hash"]
-            result.append(entry)
-        if newest is not None:
-            self._compare_with_checkpoint(newest, len(result), result)
-        return result
+        previous, count, consumed = GENESIS_HASH, 0, 0
+        if handle is not None:
+            with handle:
+                while consumed < size:
+                    raw = handle.readline()
+                    if not raw:
+                        break
+                    consumed += len(raw)
+                    if consumed > size:
+                        raw = raw[: len(raw) - (consumed - size)]
+                        consumed = size
+                    if not raw.endswith(b"\n"):
+                        break  # an incomplete last line is ignored
+                    entry = parse_line(raw[:-1])
+                    count += 1
+                    if entry["seq"] != count or entry["hash"] != entry_hash(entry, previous):
+                        raise AuditIntegrityError(f"audit chain is broken at entry {count}")
+                    previous = entry["hash"]
+                    if newest is not None and count == newest["seq"] and previous != newest["hash"]:
+                        raise AuditIntegrityError("audit log differs from a signed checkpoint")
+                    yield entry
+        if newest is not None and newest["seq"] > count:
+            raise AuditIntegrityError("audit log is shorter than a signed checkpoint")
+
+    def entries(self) -> list[dict]:
+        """All entries, after checking the hash chain. Ignores an incomplete last line.
+
+        Builds a list, so memory grows with the log; prefer ``iter_entries``, ``find``,
+        ``explain`` or ``alerts`` (all streaming) for a large log.
+        """
+        return list(self.iter_entries())
 
     def explain(self, request_id: str) -> list[dict]:
         """Every entry for ``request_id``, including alerts that list it, oldest first."""
         found = []
-        for entry in self.entries():
+        for entry in self.iter_entries():
             if entry["request_id"] == request_id:
                 found.append(entry)
             elif entry["decision"] == ALERT_DECISION and request_id in _listed_ids(entry):
@@ -553,7 +585,7 @@ class AuditLog:
     def find(self, **match: str) -> list[dict]:
         """Entries whose fields (or ``detail`` keys) all equal the given values."""
         found = []
-        for entry in self.entries():
+        for entry in self.iter_entries():
             for key, wanted in match.items():
                 holder = entry if key in ENTRY_FIELDS and key != "detail" else entry["detail"]
                 if key not in holder or str(holder[key]) != str(wanted):
@@ -564,7 +596,7 @@ class AuditLog:
 
     def alerts(self) -> list[dict]:
         """Every alert entry, oldest first."""
-        return [entry for entry in self.entries() if entry["decision"] == ALERT_DECISION]
+        return [entry for entry in self.iter_entries() if entry["decision"] == ALERT_DECISION]
 
     def verify(
         self, pinned_head: dict | None = None, pinned_public_key: bytes | None = None
