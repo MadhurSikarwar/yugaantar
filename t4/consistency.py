@@ -65,6 +65,16 @@ def check(state_dir: Path) -> dict:
         return result
     result.update(checked=True, state={"generation": state_generation, "epoch": state_epoch},
                   audit={"entries": entries, "highest_generation": log_generation, "highest_epoch": log_epoch})
+    if state_generation >= 1 and entries == 0:
+        result["problems"].append(
+            "the state was set up but the audit log has no entries: the log was deleted or emptied, "
+            "so nothing here can show whether this state is current")
+    else:
+        # The reader above checks the hash chain; this also checks every checkpoint signature
+        # (and a checkpoint that names an entry the log no longer holds).
+        report = AuditLog(effective / "audit", None).verify()
+        if not report.ok:
+            result["problems"].append("the audit log failed full verification (hash chain or signed checkpoints)")
     if state_generation < log_generation:
         result["problems"].append(
             f"the state is at generation {state_generation} but the audit log has recorded generation "

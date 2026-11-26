@@ -51,6 +51,8 @@ def _config(args: argparse.Namespace):
     (comma separated). The change register is never used to name its own approvers.
     """
     names = list(getattr(args, "approver", None) or [])
+    if any(not str(n).strip() for n in names):
+        raise ValueError("--approver needs a non-empty name")
     if not names:
         names = [n.strip() for n in os.environ.get("T4_APPROVERS", "").split(",") if n.strip()]
     if not names:
@@ -179,11 +181,14 @@ def cmd_export(args: argparse.Namespace) -> int:
         raise ValueError("give at least one --node NAME=DIR or --authority DIR")
     for name, path, kind in named_logs:
         pin = json.loads(Path(pins[name]).read_text(encoding="utf-8")) if name in pins else None
-        key = bytes.fromhex(pin["public_key"]) if pin and pin.get("public_key") else None
+        if pin is not None and not (isinstance(pin, dict) and isinstance(pin.get("public_key"), str)
+                                    and pin["public_key"]):
+            raise ValueError(f"the pin for {name} has no public key")
+        key = bytes.fromhex(pin["public_key"]) if pin is not None else None
         sources.append(exp.LogSource(Path(path), kind, name, pin, key))
     approvals = _load_approvals(Path(args.approvals)) if args.approvals else {}
     owners = json.loads(Path(args.owners).read_text(encoding="utf-8")) if args.owners else None
-    approvers = args.approver if args.approver else None
+    approvers = sorted(_config(args).authorized_approvers) if (args.approver or os.environ.get("T4_APPROVERS", "").strip()) else None
     try:
         result = exp.run_export(sources, approvals, owners=owners, approvers=approvers,
                                 alert_log=Path(args.append_alerts) if args.append_alerts else None)

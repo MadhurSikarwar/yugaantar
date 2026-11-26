@@ -101,3 +101,39 @@ class Consistency(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(HAVE_SIG, "needs the real ML-DSA wrapper")
+class ConsistencyEmptiedLog(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(prefix="t4-consist2-")
+        self.dir = Path(self._tmp.name) / "state"
+        self.deps = build_default_dependencies(self.dir)
+        dispatch(SETUP, self.deps)
+        dispatch({"op": "revoke", "actor": "eve"}, self.deps)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_a_deleted_audit_directory_is_not_reported_consistent(self):
+        shutil.rmtree(self.dir / "audit")
+        result = check(self.dir)
+        self.assertTrue(result["problems"], result)
+
+    def test_an_emptied_audit_log_is_not_reported_consistent(self):
+        (self.dir / "audit" / "audit.jsonl").write_bytes(b"")
+        (self.dir / "audit" / "checkpoints.jsonl").write_bytes(b"")
+        result = check(self.dir)
+        self.assertTrue(result["problems"], result)
+
+    def test_a_forged_checkpoint_signature_is_reported(self):
+        from t4.audit.log import AuditLog, load_signer
+        AuditLog(self.dir / "audit", load_signer(self.dir / "audit")).head()  # writes a signed checkpoint
+        path = self.dir / "audit" / "checkpoints.jsonl"
+        lines = path.read_text().splitlines()
+        record = json.loads(lines[-1])
+        record["sig"] = "00" * (len(record["sig"]) // 2)
+        lines[-1] = json.dumps(record, sort_keys=True, separators=(",", ":"))
+        path.write_text("\n".join(lines) + "\n")
+        result = check(self.dir)
+        self.assertTrue(result["problems"], result)

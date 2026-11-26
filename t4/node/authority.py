@@ -197,7 +197,8 @@ class Authority:
             txn.put(RECORD, record)
             # A revocation persists even if the vault or the log fails.
             for step in (lambda: self._revoke_in_vault(record, set_name, item, at),
-                         lambda: self._event(action, item, rule, {"effective_at": repr(at)})):
+                         lambda: self._event(action, item, rule, {"effective_at": repr(at)},
+                                             identity=[action, item, repr(at)])):
                 try:
                     step()
                 except Exception as error:
@@ -222,10 +223,17 @@ class Authority:
             record = require_record(txn.get(RECORD), "authority")
             if actor in record["revoked_actors"]:
                 raise NodeError("actor is revoked")
-            record["grants"][grant_key(actor, asset)] = {
-                "actor": actor, "asset": asset, "approval_id": approval_id}
+            key = grant_key(actor, asset)
+            record["grants"][key] = {"actor": actor, "asset": asset, "approval_id": approval_id}
+            # Each grant gets a number saved with the state. The log entry is written first, so a
+            # crash before the save leaves the number unused and a retry logs the same entry once,
+            # while a later, deliberate re-grant gets a new number and its own entry.
+            op = int(record.get("op_seq", 0)) + 1
+            record["op_seq"] = op
+            record.setdefault("grant_ops", {})[key] = op
             self._event("grant", asset, "PERM-GRANT", {
-                "subject": actor, "approval_id": approval_id, "granted_by": granted_by})
+                "subject": actor, "approval_id": approval_id, "granted_by": granted_by},
+                identity=["grant", actor, asset, approval_id, op])
             txn.put(RECORD, record)
 
     def ungrant(self, actor: str, asset: str, now: float, *, granted_by: str = "authority") -> None:
@@ -237,11 +245,13 @@ class Authority:
             record = require_record(txn.get(RECORD), "authority")
             key = grant_key(actor, asset)
             record["grants"].pop(key, None)
+            grant_op = record.get("grant_ops", {}).get(key, 0)  # which grant is being removed (kept until the next grant)
             txn.put(RECORD, record)
             for step in (lambda: self._revoke_in_vault(
                              record, "removed_grants", key, max(now, record["last_issued_at"])),
                          lambda: self._event("ungrant", asset, "PERM-REMOVE",
-                                             {"subject": actor, "granted_by": granted_by})):
+                                             {"subject": actor, "granted_by": granted_by},
+                                             identity=["ungrant", actor, asset, grant_op])):
                 try:
                     step()
                 except Exception as error:

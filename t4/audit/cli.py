@@ -95,6 +95,14 @@ def _write_pin(path: Path, head: dict, *, replace: bool) -> None:
         raise
 
 
+def _pin_key(pin: dict) -> bytes:
+    """The public key a pin names. A pin without one would let the log's own key file decide."""
+    key = pin.get("public_key") if isinstance(pin, dict) else None
+    if not isinstance(key, str) or not key:
+        raise ValueError("the pin has no public key")
+    return bytes.fromhex(key)
+
+
 def _pin(args: argparse.Namespace) -> int:
     pin_path, audit_dir = Path(args.pin).resolve(), Path(args.dir).resolve()
     if pin_path == audit_dir or audit_dir in pin_path.parents:
@@ -111,10 +119,14 @@ def _pin(args: argparse.Namespace) -> int:
             _emit(report.as_dict())
             print("not pinning a log that does not verify", file=sys.stderr)
             return 1
-        replace, expected = False, None
+        if not read_bytes(Path(args.dir) / PUBLIC_KEY_NAME):
+            print("this log is not signed: a pin without a public key cannot be advanced safely, "
+                  "so none was written", file=sys.stderr)
+            return 2
+        replace, expected, pin = False, None, None
     else:
         pin = json.loads(pin_path.read_text(encoding="utf-8"))
-        expected = bytes.fromhex(pin["public_key"])
+        expected = _pin_key(pin)
         report = AuditLog(args.dir, None).verify(pin, expected)
         if not report.ok:
             _emit(report.as_dict())
@@ -127,7 +139,19 @@ def _pin(args: argparse.Namespace) -> int:
     if expected is not None and public_key != expected:
         print("the signing key changed: the pin was left unchanged", file=sys.stderr)
         return 1
-    head["public_key"] = public_key.hex() or None
+    if pin is not None:
+        # The log is read twice above (the pin check, then the new head). Check the OLD pin again
+        # against what was just signed, so a rewrite in between cannot be blessed as the new pin.
+        again = AuditLog(args.dir, None).verify(pin, expected)
+        if not again.ok:
+            _emit(again.as_dict())
+            print("the log changed while the pin was being advanced: the pin was left unchanged",
+                  file=sys.stderr)
+            return 1
+    if not public_key:
+        print("this log is not signed: no pin was written", file=sys.stderr)
+        return 2
+    head["public_key"] = public_key.hex()
     _write_pin(pin_path, head, replace=replace)
     _emit(head)
     return 0
@@ -142,7 +166,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "verify-log":
             pin = json.loads(Path(args.pin).read_text(encoding="utf-8")) if args.pin else None
-            public_key = bytes.fromhex(pin["public_key"]) if pin and pin.get("public_key") else None
+            public_key = _pin_key(pin) if pin is not None else None
             report = AuditLog(args.dir, None).verify(pin, public_key)
             _emit(report.as_dict())
             return 0 if report.ok else 1

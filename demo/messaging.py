@@ -58,13 +58,26 @@ def _aead():
 
 def _key(shared_secret: bytes, sender: str, recipient: str) -> bytes:
     _, hkdf, hashes = _aead()
-    info = _INFO + b"\x00" + sender.encode("utf-8") + b"\x00" + recipient.encode("utf-8")
+    # Length-prefixed, so no pair of identities can produce the same bytes as another pair.
+    parts = [sender.encode("utf-8"), recipient.encode("utf-8")]
+    info = _INFO + b"".join(len(part).to_bytes(4, "big") + part for part in parts)
     return hkdf(algorithm=hashes.SHA256(), length=32, salt=None, info=info).derive(shared_secret)
 
 
 def _header(sender: str, recipient: str, seq: int, sent_at: int) -> bytes:
     return json.dumps({"v": VERSION, "from": sender, "to": recipient, "seq": seq, "at": sent_at},
                       sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+
+
+def _identity(value: object) -> str:
+    """A sender or recipient name: non-empty text that encodes as UTF-8 (no lone surrogates)."""
+    if not isinstance(value, str) or not 0 < len(value) <= 256:
+        raise MessagingError("invalid identity")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        raise MessagingError("invalid identity") from None
+    return value
 
 
 def _signed_part(header: bytes, kem_ct: bytes, nonce: bytes, body: bytes) -> bytes:
@@ -91,6 +104,7 @@ def seal(*, sender: str, sender_sig_secret: bytes, recipient: str, recipient_kem
          plaintext: str, seq: int, now: float | None = None) -> dict:
     """Return a JSON-safe message. ``seq`` must be greater than every earlier ``seq`` to this recipient."""
     chacha, _, _ = _aead()
+    sender, recipient = _identity(sender), _identity(recipient)
     if not isinstance(plaintext, str) or len(plaintext.encode("utf-8", "replace")) > MAX_PLAINTEXT:
         raise MessagingError("invalid message text")
     if type(seq) is not int or seq < 1:
@@ -109,10 +123,16 @@ def seal(*, sender: str, sender_sig_secret: bytes, recipient: str, recipient_kem
             "body": body.hex(), "sig": signature.hex()}
 
 
-def open_message(message: dict, *, recipient: str, recipient_kem_secret: bytes,
+def open_message(message: dict, *, recipient: str, recipient_kem_secret: bytes, expected_sender: str,
                  sender_sig_public: bytes, guard: ReplayGuard, now: float | None = None) -> str:
-    """Verify then decrypt. Raises ``MessagingError`` (generic text) on any failure; the guard moves only on success."""
+    """Verify then decrypt. Raises ``MessagingError`` (generic text) on any failure; the guard moves only on success.
+
+    ``expected_sender`` is who the caller believes sent this and whose public key is
+    ``sender_sig_public``. A message whose header names anyone else is refused, so a holder of one
+    accepted signing key cannot speak as, or advance the replay counter of, another sender.
+    """
     chacha, _, _ = _aead()
+    expected_sender, recipient = _identity(expected_sender), _identity(recipient)
     try:
         header_bytes = message["header"].encode("ascii")
         kem_ct, nonce = bytes.fromhex(message["kem_ct"]), bytes.fromhex(message["nonce"])
@@ -125,6 +145,8 @@ def open_message(message: dict, *, recipient: str, recipient_kem_secret: bytes,
         raise MessagingError("malformed message") from None
     if not sig.verify(sender_sig_public, _signed_part(header_bytes, kem_ct, nonce, body), signature):
         raise MessagingError("signature check failed")
+    if sender != expected_sender:
+        raise MessagingError("message is not from the expected sender")
     if to != recipient:
         raise MessagingError("message is for someone else")
     clock = time.time() if now is None else now
