@@ -1,4 +1,4 @@
-"""Measure how long a revocation takes to be enforced by the last node (M-N4).
+"""Measure how long a revocation takes to be enforced by the last node.
 
     python tools/nodes_sim.py --nodes 4 --runs 20 --seed 1
 

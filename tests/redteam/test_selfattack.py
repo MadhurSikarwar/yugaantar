@@ -1,4 +1,4 @@
-"""The red-team suite must pass a correct service and catch planted defects."""
+"""The self-attack suite must pass a correct service and catch planted defects."""
 
 import importlib.util
 import shutil

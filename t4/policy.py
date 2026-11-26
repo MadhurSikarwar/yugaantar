@@ -1,4 +1,4 @@
-"""Access policy: one function, one ordered list of rules (owner: c1; PRD M-A2).
+"""Access policy: one function, one ordered list of rules.
 
 What it does
     ``decide`` answers one question: may ``actor`` read ``asset``? ``read`` and
@@ -18,7 +18,7 @@ so an operator reading the log sees "revoked" rather than "not owner".
 
 What it is NOT
     Authorization only. The adapter never receives a credential, so it cannot
-    verify *who* is asking (PRD 4.2). Identifiers are compared as exact strings:
+    verify *who* is asking. Identifiers are compared as exact strings:
     no case folding, no Unicode normalization.
 """
 from __future__ import annotations

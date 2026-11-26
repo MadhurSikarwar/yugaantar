@@ -1,4 +1,4 @@
-"""Append-only, hash-chained audit log with signed checkpoints (PRD M-C1 to M-C5).
+"""Append-only, hash-chained audit log with signed checkpoints.
 
 What it does: writes one canonical JSON object per line to ``audit.jsonl``. Each
 entry's hash covers its content and the previous entry's hash. Every
@@ -13,7 +13,7 @@ Attacks defended against:
 - Cutting off the tail: appending and verifying compare the log with the newest
   signed checkpoint (and verification also with a head the operator pinned).
 - Concurrent writers: an exclusive file lock; callers that also hold the state-store
-  lock must take that one first (PRD lock order: store, then audit).
+  lock must take that one first (lock order: store, then audit).
 - Interrupted writes: only an incomplete last line is removed, and an alert says so.
 - Damaged logs: appending and searching fail closed with ``AuditIntegrityError``.
 
@@ -377,11 +377,11 @@ class AuditLog:
         request_ids: Iterable[str] = (),
         detail: Mapping[str, str | int | bool] | None = None,
     ) -> dict:
-        """Record an alert with its rule, plain explanation and triggering records (M-A12).
+        """Record an alert with its rule, plain explanation and triggering records.
 
         ``entries`` (sequence numbers) and ``request_ids`` are stored as JSON lists
         inside strings, so any identifier text survives unchanged.
-        """
+"""
         extra = dict(detail or {})
         extra["explanation"] = explanation
         extra["entries"] = json.dumps([int(number) for number in entries])

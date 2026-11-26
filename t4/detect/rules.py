@@ -1,23 +1,23 @@
 """Explainable detection rules (no ML): approvals, scope, revocation, movement, time.
 
 What it does
-    Small pure functions, each implementing one rule from PRD section 6.4:
+    Small pure functions, each implementing one rule:
 
     * ``check_approval_action``: an approve/revoke administration event is an
       approved change only if the approval exists, matches the action, and the
-      acting operator is the recorded and an authorized approver (M-C6).
+      acting operator is the recorded and an authorized approver.
     * ``match_grant``: a role increase is approved only by a ``grant_role``
       approval for the same subject and role, valid at the corrected event
       time (end exclusive), not revoked, from an authorized approver, and the
-      event's own ``approval_id`` (if any) must name that approval (M-C6).
+      event's own ``approval_id`` (if any) must name that approval.
     * ``reachable_services`` / ``is_unexpected_edge``: the services a role may
-      reach, plus approval scopes while valid (M-C7 baseline).
+      reach, plus approval scopes while valid (baseline).
     * ``revocation_for_denial``: a denial after an effective revocation of a
-      role whose scope covered the target is routine (M-C7).
+      role whose scope covered the target is routine.
     * ``movement_chains``: groups unexpected edges by actor and session into
-      chains whose consecutive events are at most W apart (M-C7).
+      chains whose consecutive events are at most W apart.
     * ``timing_flags``: corrected time, delivery delay and order uncertainty
-      (M-C8).
+.
 
     Every function returns a plain-language reason, so each label and alert
     can say exactly which rule and which facts produced it.

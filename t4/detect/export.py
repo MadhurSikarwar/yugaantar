@@ -1,4 +1,4 @@
-"""Alerts from our own access logs (M-C11, official mission requirement).
+"""Alerts from our own access logs (official mission requirement).
 
 What it does
     1. Verifies every input log with the audit verifier (hash chain, signed

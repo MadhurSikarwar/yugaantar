@@ -1,4 +1,4 @@
-"""M-C11: alerts raised from our own signed logs (needs c2's ``t4.audit``)."""
+"""alerts raised from our own signed logs (needs ``t4.audit``)."""
 
 import json
 from datetime import timedelta
