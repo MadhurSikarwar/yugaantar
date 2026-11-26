@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Latency benchmark for the judged adapter (PRD M-D8).
+"""Latency benchmark for the judged adapter.
 
 What it does
     Starts ``track4_service.py`` as a **new process per request**, exactly as
@@ -14,7 +14,7 @@ What it does
     result is checked once against an independent client: decapsulate with
     ``pqcrypto``, recompute the HMAC proof and compare.
 
-    Targets from the PRD: p50 under 200 ms and p95 under 1 s per request,
+    Targets: p50 under 200 ms and p95 under 1 s per request,
     far from the validator's 8 s timeout.
 
 Usage

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Imitate the organizers' judging worker against a CLEAN copy of the submission (owner: c1).
+"""Imitate the organizers' judging worker against a CLEAN copy of the submission.
 
     python scripts/sandbox_sim.py --ref origin/main --toolkit ../Track-4-Toolkit
     python scripts/sandbox_sim.py --submission /submission --toolkit /toolkit      (inside a container)
 
-What it imitates, from the toolkit's docs/adapter-v1.md (the only description we have):
+What it imitates, from the toolkit's adapter contract (the only description we have):
   * the submission is built from COMMITTED files only (`git archive REF`), so a file that exists
     only on one laptop cannot hide a problem; the tree is made read-only;
   * a NEW process per request, started from the submission folder, one JSON object on stdin and

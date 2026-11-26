@@ -1,4 +1,4 @@
-"""Randomized attack campaigns against the real adapter (owner: c1).
+"""Randomized attack campaigns against the real adapter.
 
 Two kinds of checks, both deterministic for a given seed:
 
@@ -32,8 +32,8 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip("t4.audit.log", reason="needs c2's audit log")
-pytest.importorskip("t4.crypto.kem", reason="needs c2's crypto wrappers")
+pytest.importorskip("t4.audit.log", reason="needs the audit log")
+pytest.importorskip("t4.crypto.kem", reason="needs the crypto wrappers")
 
 from pqcrypto.kem import ml_kem_768  # noqa: E402
 

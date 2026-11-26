@@ -1,6 +1,6 @@
 """Signed device requests and the node's decision.
 
-This is where the prototype verifies identity (M-N1, M-N2). Checks run in a
+This is where the prototype verifies identity. Checks run in a
 fixed order and each failure has its own rule ID, written to the node's log.
 The caller only ever sees ``{"decision": "deny"}``.
 

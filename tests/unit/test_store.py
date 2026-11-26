@@ -86,7 +86,7 @@ def test_documents_must_be_dicts(state_dir):
             txn.put("doc", [1, 2])  # type: ignore[arg-type]
 
 
-# --- tamper detection (PRD section 8, item 4) ----------------------------------
+# --- tamper detection  ----------------------------------
 
 
 def _seed(state_dir) -> FileStore:
@@ -175,11 +175,11 @@ def test_state_signed_with_another_key_is_rejected(state_dir, tmp_path):
 
 
 def test_full_rollback_is_not_detected_documented_limit(state_dir):
-    """Honest limit (PRD 4.1): restoring an older copy of the whole directory passes.
+    """Honest limit : restoring an older copy of the whole directory passes.
 
     The pinned audit head is what exposes the lost log entries. This test exists so
     that nobody can claim otherwise without changing it.
-    """
+"""
     store = _seed(state_dir)
     old = store.state_path.read_bytes()
     with store.locked() as txn:

@@ -1,4 +1,4 @@
-"""Independent check of an audit log directory (PRD M-C3, M-C5, goal 5).
+"""Independent check of an audit log directory.
 
 What it does: re-reads every entry, recomputes the hash chain, checks sequence numbers, verifies
 each signed checkpoint, and compares the log with a head and a public key that the operator saved

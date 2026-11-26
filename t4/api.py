@@ -1,9 +1,9 @@
-"""Shared interfaces for every module (owner: c1; changes go through c1).
+"""Shared interfaces for every module.
 
 API VERSION: 2  (bump this number and tell all agents when anything changes)
 
 Change log
-    2  RotationApi / BackupVaultApi / node interfaces now describe what c3 built (c3-to-c1-002);
+    2  RotationApi / BackupVaultApi / node interfaces describe the built modules;
        AuditLogApi gained ``alert``; ``StoreFullError`` added. ``tests/unit/test_api_contract.py``
        compares every interface below with the real module whenever it is present.
     1  first version
@@ -13,7 +13,7 @@ interfaces. No module implements anything here; each Protocol names the file
 that provides the real implementation. Nothing in this file touches the
 filesystem or imports ``pqcrypto``.
 
-Why Protocols: c1, c2, c3 and c4 work on separate branches at the same time.
+Why Protocols: the modules were built independently.
 Each side codes against these shapes and uses a test double until the real
 module arrives, so the final merge only has to connect things that already fit.
 
@@ -97,7 +97,7 @@ class Decision:
 
 
 # ---------------------------------------------------------------------------
-# State store (c1: t4/store.py)
+# State store (t4/store.py)
 # ---------------------------------------------------------------------------
 
 
@@ -129,7 +129,7 @@ class Store(Protocol):
 
 
 # ---------------------------------------------------------------------------
-# Audit log (c2: t4/audit/log.py)
+# Audit log (t4/audit/log.py)
 # ---------------------------------------------------------------------------
 
 
@@ -152,7 +152,7 @@ class AuditSink(Protocol):
 
 
 class AuditLogApi(AuditSink, Protocol):
-    """Full interface of ``t4.audit.log.AuditLog`` (PRD 5.1)."""
+    """Full interface of ``t4.audit.log.AuditLog``."""
 
     def alert(
         self,
@@ -166,7 +166,7 @@ class AuditLogApi(AuditSink, Protocol):
         request_ids: Iterable[str] = (),
         detail: Mapping[str, str | int | bool] | None = None,
     ) -> dict:
-        """Record an alert with its triggering entry numbers and request IDs (PRD M-A12)."""
+        """Record an alert with its triggering entry numbers and request IDs."""
         ...
 
     def head(self) -> dict: ...  # {"seq", "hash", "sig"}
@@ -188,7 +188,7 @@ class Signer(Protocol):
 
 
 # ---------------------------------------------------------------------------
-# Crypto (c2: t4/crypto/kem.py and proof.py)
+# Crypto (t4/crypto/kem.py and proof.py)
 # ---------------------------------------------------------------------------
 
 ML_KEM_768_PUBLIC_KEY_BYTES = 1184
@@ -209,8 +209,8 @@ class ProofProvider(Protocol):
 
 
 # ---------------------------------------------------------------------------
-# Rotation, backup and the node layer (c3: t4/rotation.py, t4/backup.py, t4/node/*)
-# These describe what c3 built (coord/requests/c3-to-c1-002.md). Rotation and the
+# Rotation, backup and the node layer (t4/rotation.py, t4/backup.py, t4/node/*)
+# These describe the built modules. Rotation and the
 # node functions are module-level functions; the module itself is the provider.
 # ---------------------------------------------------------------------------
 

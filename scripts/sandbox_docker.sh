@@ -7,7 +7,7 @@
 #
 # Needs: Docker (Docker Desktop on Windows/macOS, or Docker inside WSL), git, and a repo checkout with that ref fetched.
 # Network is needed only for `docker build` (to download Python and pqcrypto); the test run itself has no network.
-# NOTE: written by c1, who has no Docker; it has NOT been run by its author. Report problems to c1.
+# NOTE: this script has not been run by its author.
 set -euo pipefail
 
 REF="${1:-origin/main}"

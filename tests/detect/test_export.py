@@ -1,4 +1,4 @@
-"""M-C11: alerts raised from our own signed logs (needs c2's ``t4.audit``)."""
+"""alerts raised from our own signed logs (needs ``t4.audit``)."""
 
 import json
 from datetime import timedelta
@@ -175,7 +175,7 @@ def test_accepts_node_directory_with_log_subfolder(tmp_path):
 
 
 def test_over_long_identifiers_do_not_break_the_export(world):
-    """c5-to-c4-002: a 4,096-character actor or asset must not make the export fail."""
+    """a 4,096-character actor or asset must not make the export fail."""
     dirs, sources = world
     clock_log = AuditLog(dirs["node-a"], load_or_create_signer(dirs["node-a"]))
     long_actor = "A" * 4096
@@ -203,7 +203,7 @@ def test_over_long_identifiers_do_not_break_the_export(world):
 
 
 def test_forwarded_or_replayed_signed_requests_are_not_pinned_on_the_signer(world):
-    """c3-to-c4-002: a captured genuine request forwarded to other nodes is denied
+    """a captured genuine request forwarded to other nodes is denied
     (NODE-WRONG-NODE) with a valid signature; it must not frame its signer."""
     dirs, sources = world
     for at, node, rule in ((200, "node-b", "NODE-WRONG-NODE"), (201, "node-c", "NODE-WRONG-NODE"),

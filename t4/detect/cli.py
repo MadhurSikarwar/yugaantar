@@ -238,7 +238,7 @@ def build_parser() -> argparse.ArgumentParser:
             p.add_argument("--labels-out", action="store_true", help="also print every event's label")
         p.add_argument("--json", action="store_true")
         p.set_defaults(func=func)
-    p = sub.add_parser("export", help="verify our own logs, detect, append alerts (M-C11)")
+    p = sub.add_parser("export", help="verify our own logs, detect, append alerts ")
     p.add_argument("--node", action="append", help="node log as NODE_ID=DIR (repeatable)")
     p.add_argument("--authority", help="authority key-event log directory")
     p.add_argument("--pin", action="append", help="pinned head as NAME=FILE (from 'audit.cli head --out')")

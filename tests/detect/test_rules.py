@@ -13,7 +13,7 @@ def labels(evs, aps=None, cfg=DEFAULT_CONFIG):
     return result.predicted(), result.alerts
 
 
-# --- M-C6 role changes -----------------------------------------------------
+# --- role changes -----------------------------------------------------
 
 def _change(at=120, approval_id="chg-1", actor="user-a", role_after="report-reader"):
     return row("e1", at, actor=actor, source="admin-console", target="identity", action="role_change",
@@ -98,7 +98,7 @@ def test_review_requires_same_session():
     assert pred["e2"] == "routine"
 
 
-# --- M-C7 lateral movement -------------------------------------------------
+# --- lateral movement -------------------------------------------------
 
 def _edge(event_id, at, target, outcome="deny", session="sess-w", actor="svc-w"):
     return row(event_id, at, actor=actor, source="reports", target=target, role="service-reader",
@@ -177,7 +177,7 @@ def test_config_defaults_are_documented_values():
     assert DEFAULT_CONFIG.authorized_approvers == frozenset({"user-admin"})
 
 
-# --- M-C8 clock and order --------------------------------------------------
+# --- clock and order --------------------------------------------------
 
 def test_delayed_delivery_label():
     pred, alerts = labels(events(row("e1", 0, delay=5)))

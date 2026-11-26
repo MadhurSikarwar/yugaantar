@@ -7,7 +7,7 @@ venv/
 .mypy_cache/
 .ruff_cache/
 
-# Runtime state, keys and logs must never be committed (PRD rule 3)
+# Runtime state, keys and logs must never be committed
 state/
 *.state/
 track4-state*/

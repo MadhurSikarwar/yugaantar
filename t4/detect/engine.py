@@ -4,7 +4,7 @@ What it does
     ``analyze(events, approvals, cfg)`` gives every event exactly one of the
     nine practice labels, with the rule ID and a plain-language reason, and
     returns the alerts an operator should review. ``run(...)`` returns only the
-    alerts (PRD 5.1 signature). Rules are applied in a fixed priority:
+    alerts. Rules are applied in a fixed priority:
 
     1. approval administration events (approve/revoke) -> ``approved_change``,
        or ``unexpected_role_change`` if the approval or approver is invalid;
@@ -61,7 +61,7 @@ SUSPICIOUS_LABELS: frozenset[str] = frozenset(
 
 @dataclass(frozen=True)
 class Alert:
-    """An operator-facing alert (PRD 5.1)."""
+    """An operator-facing alert."""
 
     alert_id: str
     rule: str
@@ -290,5 +290,5 @@ def analyze(events: Iterable[Event], approvals: Mapping[str, Approval],
 
 def run(events: Iterable[Event], approvals: Mapping[str, Approval],
         cfg: DetectConfig = DEFAULT_CONFIG, baseline: object | None = None) -> list[Alert]:
-    """Return the alerts for ``events`` (PRD 5.1). ``baseline`` is reserved."""
+    """Return the alerts for ``events``. ``baseline`` is reserved."""
     return analyze(events, approvals, cfg).alerts

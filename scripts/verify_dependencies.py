@@ -16,7 +16,7 @@ What it checks (all offline, standard library only):
 
 What it does not do: it does not prove the native code is correct or constant-time, it does not
 download anything, and it cannot detect an attacker who can also rewrite RECORD. See
-docs/FINAL_THREAT_MODEL.md for the supply-chain assumptions.
+the README's limits section for the supply-chain assumptions.
 """
 from __future__ import annotations
 
