@@ -45,6 +45,7 @@ Limits
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -52,7 +53,7 @@ from typing import Iterable, Mapping, Sequence
 
 from . import engine
 from .config import DEFAULT_CONFIG, DetectConfig
-from .ingest import Approval, events_to_csv, parse_events
+from .ingest import MAX_FIELD_CHARS, Approval, events_to_csv, parse_events
 
 GRANT_ACTIONS = frozenset({"grant", "grant_read"})
 UNGRANT_ACTIONS = frozenset({"ungrant", "revoke_grant", "remove_grant"})
@@ -93,6 +94,26 @@ class Export:
     def csv(self) -> str:
         """The exported events in the practice CSV format."""
         return events_to_csv(self.rows)
+
+
+def fit_field(value: str, limit: int = MAX_FIELD_CHARS) -> str:
+    """Make ``value`` fit the detector's field limit without losing distinctness.
+
+    Identifiers are opaque and may be up to 4 KiB, and the export adds
+    prefixes (``claimed:``, ``<node_id>/``), so a converted field can exceed
+    the limit. Over-long values become a readable prefix plus the SHA-256 of
+    the whole value: deterministic, so grouping still works, and two
+    different values never collapse into one. (c5-to-c4-002)
+    """
+    if len(value) <= limit:
+        return value
+    digest = hashlib.sha256(value.encode("utf-8", "surrogatepass")).hexdigest()
+    suffix = f"…sha256:{digest}"
+    return value[: limit - len(suffix)] + suffix
+
+
+def _fit_row(row: dict) -> dict:
+    return {key: fit_field(value) if isinstance(value, str) else value for key, value in row.items()}
 
 
 def read_role(asset: str) -> str:
@@ -207,6 +228,7 @@ def convert(node_logs: Mapping[str, Sequence[dict]], key_events: Sequence[dict],
                 "approval_id": "", "session_id": device, "correlation_id": entry.get("request_id", ""),
             })
         request_ids[event_id] = entry.get("request_id", "")
+    rows = [_fit_row(row) for row in rows]
     return rows, request_ids
 
 
