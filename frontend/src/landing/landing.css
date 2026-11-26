@@ -31,17 +31,14 @@
 }
 .site-header nav {
   display: flex;
-  gap: clamp(18px, 3vw, 44px);
+  gap: clamp(6px, 1.6vw, 24px);
   margin-left: auto;
   margin-right: 16px;
   font-size: 15px;
 }
 .site-header nav a {
-  padding: 6px 0;
-  border-bottom: 2px solid transparent;
-}
-.site-header nav a:hover {
-  border-color: currentColor;
+  padding: 8px 12px;
+  border-radius: var(--radius);
 }
 .hero-body {
   margin: 0 var(--inset);
@@ -288,9 +285,6 @@
   font-size: 13px;
   font-weight: 600;
 }
-.toggle:hover {
-  border-color: var(--frost);
-}
 .toggle[aria-pressed="true"] {
   border-color: var(--deny);
   background: var(--deny);
@@ -425,6 +419,11 @@
   background: var(--frost);
   color: var(--night);
 }
+.ledger,
+.limits {
+  --hover-bg: var(--night);
+  --hover-fg: var(--frost);
+}
 .ledger :focus-visible,
 .limits :focus-visible {
   outline-color: var(--ultra);
@@ -488,9 +487,6 @@
   font-weight: 700;
   font-stretch: 75%;
 }
-.decision:hover {
-  box-shadow: 0 0 0 2px var(--night);
-}
 .decision small {
   font-size: 11px;
   font-weight: 600;
@@ -498,6 +494,7 @@
 }
 .decision-allow {
   background: var(--allow);
+  color: var(--night);
 }
 .decision-deny {
   background: var(--night);
@@ -591,9 +588,6 @@
   margin-left: -1px;
   font-weight: 600;
   cursor: pointer;
-}
-.choice span:hover {
-  background: var(--night-2);
 }
 .choice input:checked + span {
   background: var(--frost);
@@ -717,6 +711,9 @@
 .primitives tbody th {
   white-space: nowrap;
 }
+.landing .primitives tr > :first-child {
+  padding-left: 10px;
+}
 .primitives-note {
   margin-top: 18px;
 }
@@ -732,12 +729,12 @@
 .site-footer span {
   margin-right: auto;
 }
-.site-footer a:hover,
-.site-footer button:hover {
-  text-decoration: underline;
+.site-footer a,
+.site-footer button {
+  padding: 6px 10px;
+  border-radius: var(--radius);
 }
 .site-footer button {
-  padding: 0;
   border: 0;
   background: none;
 }
@@ -893,5 +890,147 @@
   .sim-clock {
     width: 100%;
     margin-left: 0;
+  }
+}
+
+/* Hover: background and text trade places so the whole item stays legible. */
+@media (hover: hover) {
+  .wordmark:hover,
+  .site-header nav a:hover,
+  .site-footer a:hover,
+  .site-footer button:hover {
+    background: var(--frost);
+    color: var(--ultra);
+  }
+
+  /* Rows on dark surfaces turn light. The spread shadow pads without shifting. */
+  .board li:hover,
+  .sim-log li:hover {
+    background: var(--frost);
+    box-shadow: 0 0 0 6px var(--frost);
+    color: var(--night);
+  }
+  .board li:hover > span:not(.board-decision) .flap {
+    background: linear-gradient(
+      #fff 0 calc(50% - 0.5px),
+      #cdd0f4 calc(50% - 0.5px) calc(50% + 0.5px),
+      #dfe1fb calc(50% + 0.5px)
+    );
+    color: var(--night);
+  }
+  .board li.row-deny:hover > .board-rule .flap {
+    color: var(--deny-ink);
+  }
+  .sim-log li:hover span {
+    color: var(--night);
+  }
+  .sim-log li.tone-deny:hover {
+    color: var(--deny-ink);
+  }
+  .authority:hover {
+    background: var(--frost);
+    color: var(--night);
+  }
+  .authority:hover .tone-allow {
+    color: var(--allow-ink);
+  }
+  .node-card:hover {
+    background-color: var(--frost);
+    color: var(--night);
+  }
+  .node-card:hover .verdicts dt {
+    color: var(--night);
+  }
+  .node-card:hover .meter {
+    background: #0f0b3a33;
+  }
+  .node-card:hover .toggle {
+    border-color: var(--night);
+    color: var(--frost);
+  }
+  .toggle:hover,
+  .node-card:hover .toggle:hover {
+    background: var(--frost);
+    border-color: var(--night);
+    color: var(--night);
+  }
+  .node-card:hover .toggle[aria-pressed="true"] {
+    color: var(--night);
+  }
+  .toggle[aria-pressed="true"]:hover,
+  .node-card:hover .toggle[aria-pressed="true"]:hover {
+    background: var(--night);
+    border-color: var(--deny);
+    color: var(--deny);
+  }
+  .sim-controls select:hover,
+  .choice span:hover,
+  .replies code:hover {
+    background: var(--frost);
+    color: var(--night);
+  }
+  .choice input:checked + span:hover {
+    background: var(--night);
+    border-color: var(--frost);
+    color: var(--frost);
+  }
+  .rules li:hover {
+    background: var(--frost);
+    color: var(--night);
+  }
+  .rules li.matched:hover {
+    background: var(--night);
+    box-shadow: inset 0 0 0 2px currentColor;
+  }
+  .rules li.matched.allow:hover,
+  .rules li.matched.allow:hover .rule-state {
+    color: var(--allow);
+  }
+  .rules li.matched.deny:hover,
+  .rules li.matched.deny:hover .rule-state {
+    color: var(--deny);
+  }
+
+  /* Rows on light surfaces turn dark. */
+  .ledger-table tbody tr:hover,
+  .primitives tbody tr:hover {
+    background: var(--night);
+    color: var(--frost);
+  }
+  .ledger-table tbody tr:hover .rewritten {
+    color: var(--night);
+  }
+  .ledger-table tbody tr:hover .decision {
+    border-color: var(--frost);
+  }
+  .ledger-table tbody tr.broken:hover .recomputed {
+    color: var(--deny);
+  }
+  .limit-list li:hover {
+    background: var(--night);
+    box-shadow: 0 0 0 10px var(--night);
+    color: var(--frost);
+  }
+  .check:hover {
+    background: var(--frost);
+    box-shadow: inset 0 0 0 2px var(--night);
+    color: var(--night);
+  }
+  .check:hover code {
+    color: var(--night);
+  }
+  .check.pass:hover strong {
+    color: var(--allow-ink);
+  }
+  .check.fail:hover strong {
+    color: var(--deny-ink);
+  }
+  .ledger-table tbody tr .decision-allow:hover {
+    background: var(--night);
+    color: var(--allow);
+  }
+  .ledger-table tbody tr .decision-deny:hover {
+    background: var(--frost);
+    color: var(--night);
   }
 }

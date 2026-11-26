@@ -32,9 +32,6 @@
   border-radius: var(--radius);
   font-weight: 600;
 }
-.sidebar nav a:hover {
-  background: #ffffff1f;
-}
 .sidebar nav a[aria-current="page"] {
   background: var(--frost);
   color: var(--night);
@@ -47,14 +44,15 @@
   padding: 0 12px;
   font-size: 14px;
 }
+.sidebar-foot a,
 .sidebar-foot button {
-  padding: 0;
+  margin: 0 -8px;
+  padding: 4px 8px;
+  border-radius: var(--radius);
+}
+.sidebar-foot button {
   border: 0;
   background: none;
-}
-.sidebar-foot button:hover,
-.sidebar-foot a:hover {
-  text-decoration: underline;
 }
 .sidebar-foot p {
   padding-top: 14px;
@@ -95,9 +93,6 @@
   background: var(--night-2);
   color: var(--muted);
   font-size: 14px;
-}
-.search-trigger:hover {
-  border-color: var(--muted);
 }
 kbd {
   padding: 3px 8px;
@@ -183,9 +178,6 @@ kbd {
   padding: 14px 18px 12px;
   background: var(--night);
 }
-.totals a:hover {
-  background: var(--night-2);
-}
 .totals span {
   font-size: 14px;
   color: var(--muted);
@@ -222,6 +214,9 @@ kbd {
   margin-bottom: 14px;
 }
 .panel-head a {
+  margin: 0 -8px;
+  padding: 3px 8px;
+  border-radius: var(--radius);
   font-size: 14px;
   text-decoration: underline;
   text-underline-offset: 4px;
@@ -287,7 +282,7 @@ kbd {
   background: transparent;
 }
 .column.active {
-  background: #ffffff14;
+  background: var(--frost);
 }
 .column:focus-visible {
   outline-offset: -2px;
@@ -414,9 +409,6 @@ kbd {
   font-weight: 600;
   text-transform: capitalize;
 }
-.chips button:hover {
-  background: var(--night-2);
-}
 .chips span {
   font-weight: 500;
   color: var(--muted);
@@ -435,13 +427,13 @@ kbd {
   position: relative;
   overflow-x: auto;
 }
-table {
+.console table {
   width: 100%;
   border-collapse: collapse;
   font-size: 14px;
   text-align: left;
 }
-th {
+.console th {
   padding: 10px 14px 10px 0;
   border-bottom: 1px solid var(--muted);
   font-size: 12px;
@@ -450,23 +442,24 @@ th {
   text-align: left;
   white-space: nowrap;
 }
-td {
+.console td {
   max-width: 340px;
   padding: 11px 14px 11px 0;
   border-bottom: 1px solid var(--line);
   overflow-wrap: anywhere;
   font-variant-numeric: tabular-nums;
 }
-td:last-child {
+.console th:first-child,
+.console td:first-child {
+  padding-left: 10px;
+}
+.console td:last-child {
   width: 1%;
-  padding-right: 0;
+  padding-right: 10px;
   white-space: nowrap;
 }
-tbody tr {
+.console tbody tr {
   cursor: pointer;
-}
-tbody tr:hover {
-  background: var(--night-3);
 }
 .cell-timestamp,
 .cell-lastUpdated {
@@ -529,10 +522,6 @@ tbody tr:hover {
   font-size: 12px;
   font-weight: 600;
 }
-.row-action:hover {
-  background: var(--frost);
-  color: var(--night);
-}
 .empty {
   display: grid;
   justify-items: center;
@@ -571,6 +560,11 @@ tbody tr:hover {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 24px;
   padding-top: 14px;
+}
+.boundaries > div {
+  margin: -10px;
+  padding: 10px;
+  border-radius: var(--radius);
 }
 .boundaries h3 {
   margin-bottom: 8px;
@@ -612,7 +606,7 @@ tbody tr:hover {
   transition: opacity 0.15s;
 }
 .link-faded {
-  opacity: 0.08;
+  opacity: 0.2;
 }
 .map-node rect {
   fill: var(--night);
@@ -641,8 +635,8 @@ tbody tr:hover {
 .map-device circle {
   fill: var(--frost);
 }
-.map-device:hover circle {
-  fill: var(--amber);
+.map-label {
+  fill: transparent;
 }
 .map-device text {
   font-size: 13px;
@@ -735,10 +729,11 @@ dialog::backdrop {
   white-space: nowrap;
 }
 .palette li[aria-selected="true"] {
-  background: var(--ultra);
+  background: var(--frost);
+  color: var(--night);
 }
 .palette li[aria-selected="true"] small {
-  color: var(--frost);
+  color: var(--night);
 }
 .palette-empty {
   padding: 20px 22px;
@@ -799,9 +794,6 @@ dialog::backdrop {
   .sidebar nav a {
     white-space: nowrap;
   }
-  .sidebar nav a:hover {
-    transform: none;
-  }
   .sidebar-foot {
     display: flex;
     flex-wrap: wrap;
@@ -821,5 +813,95 @@ dialog::backdrop {
     width: 100%;
     justify-items: start;
     margin: 0;
+  }
+}
+
+/* Hover: background and text trade places so the whole item stays legible. */
+@media (hover: hover) {
+  .brand:hover,
+  .sidebar nav a:hover,
+  .sidebar-foot a:hover,
+  .sidebar-foot button:hover {
+    background: var(--frost);
+    color: var(--ultra);
+  }
+  .sidebar nav a[aria-current="page"]:hover {
+    background: var(--night);
+    color: var(--frost);
+  }
+  .search-trigger:hover,
+  .totals a:hover,
+  .panel-head a:hover,
+  .chips button:hover,
+  .console tbody tr:hover {
+    background: var(--frost);
+    color: var(--night);
+  }
+  .search-trigger:hover {
+    border-color: var(--frost);
+  }
+  .search-trigger:hover kbd {
+    background: var(--night);
+    color: var(--frost);
+  }
+  .totals a:hover span,
+  .totals li a:hover strong,
+  .chips button:hover span {
+    color: var(--night);
+  }
+  .chips button[aria-pressed="true"]:hover {
+    background: var(--night);
+    color: var(--frost);
+  }
+  .chips button[aria-pressed="true"]:hover span {
+    color: var(--frost);
+  }
+  .console
+    tbody
+    tr:hover
+    :is(.badge-allow, .badge-active, .badge-current, .badge-valid) {
+    background: var(--night);
+    color: var(--allow);
+  }
+  .console
+    tbody
+    tr:hover
+    :is(.badge-stale, .badge-offline, .badge-not-checked) {
+    background: var(--night);
+    color: var(--amber);
+  }
+  .console tbody tr:hover .row-action {
+    border-color: var(--night);
+  }
+  .console tbody tr .row-action:hover {
+    background: var(--night);
+    color: var(--frost);
+  }
+  .chart-rules li:hover,
+  .split-key > div:hover,
+  .boundaries > div:hover,
+  .inspector dl > div:hover {
+    background: var(--frost);
+    box-shadow: 0 0 0 6px var(--frost);
+    color: var(--night);
+  }
+  .boundaries > div:hover p,
+  .inspector dl > div:hover dt {
+    color: var(--night);
+  }
+  .map-node:hover rect {
+    fill: var(--frost);
+  }
+  .map-node:hover text {
+    fill: var(--night);
+  }
+  .map-device:hover .map-label {
+    fill: var(--frost);
+  }
+  .map-device:hover circle {
+    fill: var(--amber);
+  }
+  .map-device:hover text {
+    fill: var(--night);
   }
 }

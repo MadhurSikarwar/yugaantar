@@ -13,6 +13,12 @@
   --chart-deny: #f25a3c;
   --chart-neutral: #8780ff;
   --radius: 3px;
+  /* Hovering swaps to the opposite of the surface underneath. */
+  --hover-bg: var(--frost);
+  --hover-fg: var(--night);
+  /* Status text that stays readable on a light hover background. */
+  --allow-ink: #00695c;
+  --deny-ink: #a8230c;
   --gutter: clamp(20px, 4.5vw, 80px);
   --inset: max(var(--gutter), calc((100% - 1480px) / 2));
   --mono: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace;
@@ -112,36 +118,46 @@ code {
   background: transparent;
   font-size: 15px;
   font-weight: 600;
-  transition: background-color 0.15s;
-}
-.button:hover:not(:disabled) {
-  background: color-mix(in srgb, currentColor 14%, transparent);
 }
 .button:disabled {
   opacity: 0.45;
 }
-.button-light:hover:not(:disabled),
-.button-deny:hover:not(:disabled),
-.button-dark:hover:not(:disabled) {
-  box-shadow: 0 0 0 2px var(--amber);
-}
-.button-light,
-.button-light:hover:not(:disabled) {
+.button-light {
   background: var(--frost);
   border-color: var(--frost);
   color: var(--night);
 }
-.button-deny,
-.button-deny:hover:not(:disabled) {
+.button-deny {
   background: var(--deny);
   border-color: var(--deny);
   color: var(--night);
 }
-.button-dark,
-.button-dark:hover:not(:disabled) {
+.button-dark {
   background: var(--night);
   border-color: var(--night);
   color: var(--frost);
+}
+@media (hover: hover) {
+  .button:hover:not(:disabled) {
+    background: var(--hover-bg);
+    border-color: var(--hover-bg);
+    color: var(--hover-fg);
+  }
+  .button.button-light:hover:not(:disabled) {
+    background: var(--night);
+    border-color: var(--frost);
+    color: var(--frost);
+  }
+  .button.button-deny:hover:not(:disabled) {
+    background: var(--night);
+    border-color: var(--deny);
+    color: var(--deny);
+  }
+  .button.button-dark:hover:not(:disabled) {
+    background: var(--frost);
+    border-color: var(--night);
+    color: var(--night);
+  }
 }
 .route-loading {
   min-height: 100vh;

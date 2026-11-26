@@ -78,7 +78,16 @@ export default function NodeMap({ nodes }: { nodes: NodeRecord[] }) {
             >
               <title>{id}</title>
               <circle r={8} />
-              <text transform="translate(2 20) rotate(32)">{clip(id, 14)}</text>
+              <g transform="translate(2 20) rotate(32)">
+                <rect
+                  className="map-label"
+                  x={-5}
+                  y={-14}
+                  width={clip(id, 14).length * 7.6 + 12}
+                  height={20}
+                />
+                <text>{clip(id, 14)}</text>
+              </g>
             </g>
           ))}
         </svg>
