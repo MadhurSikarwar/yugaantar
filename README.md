@@ -80,7 +80,7 @@ The full list is in `docs/threat-model.md`.
 - No caller authentication in the adapter.
 - A full rollback of a state directory can't be detected locally.
 - Anyone with write access to a directory can read its signing key.
-- No transport encryption or forward secrecy (goals 9 to 12 are not supported).
+- No transport encryption or forward secrecy in the adapter (goals 10 to 12 are not supported). Goal 9 (replay and recipient checks for messages) exists only in the optional demo layer, `demo/messaging.py`.
 - The detector is measured only on synthetic data.
 - The running service catches log tampering only in recent entries (and then fails closed). Older edits are caught by `verify-log`. `audit`'s `rule` field reveals denial reasons to any caller (accepted, `coord/DECISIONS.md` D-004).
 - Some review findings are still open (listed in the threat model).

@@ -48,16 +48,16 @@ operator: verify-log (pinned head + key) · explain · detector over our own ver
 <ul>
 <li><b>Identity and authorization.</b> The judged adapter enforces permissions on the stated <code>actor</code>. The contract carries no credential, so it does not authenticate callers. Device identity is verified in the node layer by ML-DSA-65 signatures.</li>
 <li><b>Keys.</b> These are generated at runtime and never stored in the repository. The adapter's audit key and the authority and device keys are ML-DSA-65. Key rotation is journalled (PREPARED, then COMMITTED) with activation time C more than T + s ahead and no grace period. Backups are HMAC-authenticated.</li>
-<li><b>Libraries.</b> <code>pqcrypto==0.4.0</code> (ML-KEM-768, ML-DSA-65) and the Python standard library (HMAC, SHA-256). No custom crypto, no ML.</li>
-<li><b>Working:</b> all five operations, the node layer, rotation, backup, signed logs, the detector, the red-team suite and the simulation. <b>Not built:</b> encrypted messaging (goals 9 to 12).</li>
+<li><b>Libraries.</b> <code>pqcrypto==0.4.0</code> (ML-KEM-768, ML-DSA-65) and the Python standard library (HMAC, SHA-256) at runtime. No custom crypto, no ML. The optional demo-layer messaging also uses the vetted <code>cryptography</code> package (ChaCha20-Poly1305); the judged adapter does not import it.</li>
+<li><b>Working:</b> all five operations, the node layer, rotation, backup, signed logs, the detector, the red-team suite and the simulation. <b>Demo layer only:</b> signed, encrypted messages with replay and recipient checks (goal 9 in part). <b>Not built:</b> forward secrecy, delivery under loss, session resumption (goals 10 to 12).</li>
 </ul>
 
 <h2>Five-minute fallback video</h2>
 <p><b>Video link:</b> <span class="todo">[public URL]</span> &nbsp; <b>Duration:</b> 5 minutes &nbsp; <b>Access checked:</b> <span class="todo">[date, opened while logged out]</span></p>
 
-<p><b>Observed outcome.</b> The first four results are from the release candidate <code>ebb01bc</code> on Linux (Ubuntu 26.04 under WSL2, Python 3.12.16, <code>pqcrypto</code> 0.4.0, not the organizers' sandbox). The rest are from the earlier runs listed in the evidence sheet.
+<p><b>Observed outcome.</b> The first four results are from the release candidate <code>75bc7da</code> on Linux (Ubuntu 26.04 under WSL2, Python 3.12.16, <code>pqcrypto</code> 0.4.0, not the organizers' sandbox). The rest are from the earlier runs listed in the evidence sheet.
 <ul>
-<li>The official validator exits 0, and 817 tests pass with none skipped.</li>
+<li>The official validator exits 0, and 867 tests pass with none skipped.</li>
 <li>Our PRD section 8 red-team suite: 251 checks passed, 0 failed.</li>
 <li>Real-kill test: 1,000 SIGKILLs during key rotation, 0 failures.</li>
 <li>Our judging-worker simulator passes, and the one-command demo passes all its checks.</li>
@@ -112,7 +112,7 @@ Details are in <code>docs/FINAL_TEST_RESULTS.md</code> and <code>docs/evidence-s
 <li><b>No caller authentication in the adapter.</b> Anyone can claim any actor.</li>
 <li>Whoever can write a directory can read its signing key and rebuild its log. A pin exposes this only up to the pinned entry. Entries after the newest checkpoint or pin can be cut unnoticed. A full rollback of a state directory is not detectable locally.</li>
 <li><b>Remaining after review fixes:</b> about 700,000 revocations of new names (measured at 72 bytes each) fill the state store, after which new revocations fail. Audit logs grow without limit (5 to 25 KB per hostile 4 KiB read). The running service fully re-checks logs up to 256 KiB on each write. Older parts of larger logs need an operator's <code>verify-log</code>. The authority does not authenticate its operator, including for rotation. Backups are not encrypted, and a restore loses newer enrolments and grants. An accepted list may be missing from a node log if the write fails.</li>
-<li>No transport encryption and no forward secrecy (goals 9 to 12 are not supported). A reused <code>protected_read</code> challenge is accepted.</li>
+<li>No transport encryption and no forward secrecy (goals 10 to 12 are not supported; goal 9 only in the demo layer). A reused <code>protected_read</code> challenge is accepted.</li>
 <li>The detector is measured only on synthetic data: 22 practice rows cannot establish accuracy, and the held-out set reflects our own assumptions. Linux was tested locally and in Docker, not on the organizer sandbox. A state folder we own is made private (0700). In a shared folder like /tmp, we use our own subfolder.</li>
 </ul>
 <p><b>Largest remaining risk:</b> the adapter cannot tell who is calling. Strong identity exists only where devices sign their requests.</p>
