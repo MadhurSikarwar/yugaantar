@@ -69,6 +69,10 @@ def _events(path: Path) -> list:
     events = load_events(path, redelivered=ignored)
     if ignored:
         print(f"note: ignored {len(ignored)} re-delivered event(s), first: {ignored[0]!r}", file=sys.stderr)
+    conflicted = [e.event_id for e in events if e.conflicting]
+    if conflicted:
+        print(f"note: {len(conflicted)} event ID(s) were reused with different content; the first record "
+              f"was analysed (see DET-CONFLICTING-DUPLICATE), first: {conflicted[0]!r}", file=sys.stderr)
     return events
 
 

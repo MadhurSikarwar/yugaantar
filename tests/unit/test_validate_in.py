@@ -236,8 +236,12 @@ def test_protected_read_ok():
     ],
 )
 def test_protected_read_rejects_bad_keys(public_key):
-    with pytest.raises(InputError):
-        validate_request(_pr(public_key=public_key))
+    if isinstance(public_key, str):
+        # Not usable, but not rejected here: the service decides permission first.
+        assert validate_request(_pr(public_key=public_key)).public_key is None
+    else:
+        with pytest.raises(InputError):
+            validate_request(_pr(public_key=public_key))
 
 
 def test_protected_read_requires_all_fields():

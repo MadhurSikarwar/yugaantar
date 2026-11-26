@@ -9,15 +9,20 @@ What it does
     report never rewrites the source evidence.
 
 What it defends against
-    * Malformed input: wrong header, missing or extra columns, non-UTC or
-      unparsable timestamps and non-integer offsets raise ``ValueError`` with
-      the row number. The detector refuses to classify a file it cannot read
-      exactly, instead of silently skipping rows an attacker could hide in.
-    * Two different records with one ``event_id`` raise ``ValueError``: event
-      IDs identify records, and this would make every explanation ambiguous.
-      A re-delivery (every field identical except the collector's receipt time)
-      is ignored, keeping the first, so one duplicate cannot stop detection.
-      Pass ``redelivered`` to learn which IDs were ignored.
+    * Malformed input: a missing or repeated required column, a row with the
+      wrong number of cells, non-UTC or unparsable timestamps and non-integer
+      offsets raise ``ValueError`` with the row number. The detector refuses to
+      classify a file it cannot read exactly, instead of silently skipping rows
+      an attacker could hide in. Columns are matched by name, so their order
+      does not matter and extra columns are ignored. UTC may be written as
+      ``Z``, ``z`` or ``+00:00``. An empty file is refused.
+    * Repeated ``event_id``: the first record in receipt order is the one
+      analysed, so a replayed ID cannot stop detection of anything else. A
+      re-delivery (same content, only the collector's receipt time may differ)
+      is ignored; pass ``redelivered`` to learn which. A copy with different
+      content is kept on the first record in ``Event.conflicting`` and the
+      engine raises ``DET-CONFLICTING-DUPLICATE`` showing both, because either
+      one could be the false one.
     * All values stay plain strings. Nothing is evaluated, and no field is used
       as a file path.
 """
@@ -27,7 +32,7 @@ from __future__ import annotations
 import csv
 import io
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, Mapping
@@ -50,19 +55,21 @@ COLUMNS: tuple[str, ...] = (
 )
 
 MAX_FIELD_CHARS = 4096
+MAX_CONFLICTS_KEPT = 5  # per event ID; all distinct ones are counted
 MAX_OFFSET_MS = 10**9  # about 11.6 days; larger values are not a clock offset
 MAX_FILE_BYTES = 256 * 1024 * 1024
 
 
 def parse_utc(value: str, *, field: str = "timestamp") -> datetime:
-    """Parse an ISO 8601 UTC timestamp that ends in ``Z``.
+    """Parse an ISO 8601 UTC timestamp ending in ``Z``, ``z`` or ``+00:00``.
 
     Raises ``ValueError`` for anything that is not an explicit UTC time.
     """
-    if not isinstance(value, str) or not value.endswith("Z"):
-        raise ValueError(f"{field}: expected an ISO 8601 UTC time ending in Z")
+    suffix = next((s for s in ("Z", "z", "+00:00") if isinstance(value, str) and value.endswith(s)), None)
+    if suffix is None:
+        raise ValueError(f"{field}: expected an ISO 8601 UTC time ending in Z or +00:00")
     try:
-        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+        parsed = datetime.fromisoformat(value[: -len(suffix)] + "+00:00")
     except ValueError:
         raise ValueError(f"{field}: not an ISO 8601 time") from None
     if parsed.utcoffset() != timedelta(0):
@@ -97,6 +104,10 @@ class Event:
     receipt_index: int
     event_time: datetime
     received_time: datetime
+    # Later records that reused this event_id with different content (a few of them), and how
+    # many distinct ones there were. They are reported, not analysed.
+    conflicting: tuple["Event", ...] = ()
+    conflict_count: int = 0
 
     @property
     def corrected_time(self) -> datetime:
@@ -166,8 +177,11 @@ def _event_from_row(row: Mapping[str, str], index: int, line: int) -> Event:
     )
 
 
-def _same_record(first: Event, again: Event) -> bool:
-    return all(getattr(first, name) == getattr(again, name) for name in COLUMNS if name != "received_time_utc")
+def _content(event: Event) -> tuple:
+    """What a record says, apart from when the collector received it. Times are compared as
+    instants, so ``Z`` and ``+00:00`` spellings of one time are the same."""
+    return tuple(event.event_time if name == "event_time_utc" else getattr(event, name)
+                 for name in COLUMNS if name != "received_time_utc")
 
 
 def parse_events(text: str, *, redelivered: list[str] | None = None) -> list[Event]:
@@ -179,29 +193,45 @@ def parse_events(text: str, *, redelivered: list[str] | None = None) -> list[Eve
         raise ValueError("events: empty file") from None
     except csv.Error:
         raise ValueError("events: unreadable header") from None
-    if tuple(h.strip() for h in header) != COLUMNS:
-        raise ValueError("events: header does not match the expected columns")
+    header = [h.strip() for h in header]
+    if header and header[0].startswith("\ufeff"):
+        header[0] = header[0].lstrip("\ufeff").strip()
+    missing = [name for name in COLUMNS if name not in header]
+    if missing:
+        raise ValueError(f"events: header is missing the columns {', '.join(missing)}")
+    if any(header.count(name) > 1 for name in COLUMNS):
+        raise ValueError("events: header repeats a column")
     events: list[Event] = []
-    seen: dict[str, Event] = {}
+    seen: dict[str, int] = {}  # event_id -> index in ``events``
+    versions: dict[str, set] = {}
+    conflicts: dict[str, list[Event]] = {}
     try:
         for cells in reader:
             line = reader.line_num
             if not cells or cells == [""]:
                 continue
-            if len(cells) != len(COLUMNS):
-                raise ValueError(f"row {line}: expected {len(COLUMNS)} columns, got {len(cells)}")
-            event = _event_from_row(dict(zip(COLUMNS, cells)), len(events), line)
-            first = seen.get(event.event_id)
-            if first is not None:
-                if not _same_record(first, event):
-                    raise ValueError(f"row {line}: duplicate event_id with different content")
-                if redelivered is not None:
-                    redelivered.append(event.event_id)
+            if len(cells) != len(header):
+                raise ValueError(f"row {line}: expected {len(header)} columns, got {len(cells)}")
+            event = _event_from_row(dict(zip(header, cells)), len(events), line)
+            at = seen.get(event.event_id)
+            if at is not None:
+                known = versions.setdefault(event.event_id, {_content(events[at])})
+                if _content(event) in known:
+                    if redelivered is not None:
+                        redelivered.append(event.event_id)
+                    continue
+                known.add(_content(event))
+                kept = conflicts.setdefault(event.event_id, [])
+                if len(kept) < MAX_CONFLICTS_KEPT:
+                    kept.append(event)
                 continue
-            seen[event.event_id] = event
+            seen[event.event_id] = len(events)
             events.append(event)
     except csv.Error:
         raise ValueError(f"events: malformed CSV near row {reader.line_num}") from None
+    for event_id, kept in conflicts.items():
+        at = seen[event_id]
+        events[at] = replace(events[at], conflicting=tuple(kept), conflict_count=len(versions[event_id]) - 1)
     return events
 
 

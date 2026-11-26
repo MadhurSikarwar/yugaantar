@@ -42,7 +42,7 @@ from typing import Iterable, Mapping, Sequence
 
 from . import rules
 from .config import DEFAULT_CONFIG, DetectConfig
-from .ingest import Approval, Event, iso_z
+from .ingest import COLUMNS, Approval, Event, iso_z
 
 LABELS: tuple[str, ...] = (
     "routine",
@@ -117,7 +117,7 @@ def _alert(rule: str, severity: str, trigger: Event, events: Sequence[Event],
     """``evidence`` are events the alert cannot be raised without: it is emitted no earlier than
     the latest of their receipt times (out-of-order delivery can bring the trigger first)."""
     ordered = sorted(events, key=lambda e: (e.corrected_time, e.receipt_index))
-    ids = tuple(e.event_id for e in ordered)
+    ids = tuple(dict.fromkeys(e.event_id for e in ordered))
     services: list[str] = []
     for event in ordered:
         if event.target_service not in services:
@@ -134,6 +134,23 @@ def _alert(rule: str, severity: str, trigger: Event, events: Sequence[Event],
         explanation=explanation,
         order_uncertain=rules.pair_uncertain(ordered, cfg),
     )
+
+
+def _conflict_explanation(event: Event) -> str:
+    def short(value: object) -> str:
+        text = repr(value)
+        return text if len(text) <= 80 else text[:77] + "..."
+
+    copies = []
+    for other in event.conflicting[:3]:
+        changed = [f"{name} {short(getattr(event, name))} -> {short(getattr(other, name))}"
+                   for name in COLUMNS if name != "received_time_utc"
+                   and getattr(event, name) != getattr(other, name)]
+        copies.append("; ".join(changed))
+    return (f"Event ID {event.event_id} arrived again with different content "
+            f"({event.conflict_count} differing version(s)). Only the first record, by {event.actor}, "
+            "was analysed by the other rules. Either version could be the false one: check the source. "
+            "Differences (first -> later): " + " | ".join(copies))
 
 
 @dataclass
@@ -227,6 +244,10 @@ def analyze(events: Iterable[Event], approvals: Mapping[str, Approval],
         if rules.is_unexpected_edge(event, approvals, cfg):
             candidates.append(event)
 
+    # Roles we know something about: configured, named by an approval, or granted in this data.
+    known_roles = (set(cfg.role_scope) | set(cfg.role_rank) | {a.role for a in approvals.values()}
+                   | {e.role_after for e in events if e.role_after != e.role_before})
+
     lone: list[Event] = []
     for chain in rules.movement_chains(candidates, cfg):
         services = {e.target_service for e in chain}
@@ -272,6 +293,10 @@ def analyze(events: Iterable[Event], approvals: Mapping[str, Approval],
                 severity = "low"
                 why = (f"outside the expected scope of role {event.role_before}. "
                        "Single edge: not a movement sequence.")
+                if event.role_before not in known_roles:
+                    rule = "DET-ROLE-NOT-CONFIGURED"
+                    why = (f"with role {event.role_before}, which has no access rules configured, so "
+                           "this access could not be judged. Add the role with --policy FILE.")
             # The label is unchanged (the nine practice labels have none for these cases).
             put(event, "routine", rule,
                 f"{event.outcome} edge {event.source_service}->{event.target_service} is outside the "
@@ -299,6 +324,12 @@ def analyze(events: Iterable[Event], approvals: Mapping[str, Approval],
         else:
             put(event, "routine", "DET-ROUTINE",
                 f"{event.action} on {event.target_service} is within the expected scope of {event.role_before}")
+
+    for event in events:
+        if event.conflicting:
+            alerts.append(_alert(
+                "DET-CONFLICTING-DUPLICATE", "high", event, [event, *event.conflicting],
+                _conflict_explanation(event), cfg, evidence=event.conflicting))
 
     alerts.sort(key=lambda a: (a.emitted_at, a.alert_id))
     return Result(events=events, labels=labels, alerts=alerts, order_uncertain=uncertain)

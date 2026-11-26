@@ -162,7 +162,7 @@ MALFORMED = {
     "wrong-type": b'{"op":"revoke","actor":123}',
     "missing-field": b'{"op":"read","actor":"a"}',
     "bad-op-type": b'{"op":["read"]}',
-    "short-key": b'{"op":"protected_read","actor":"a","asset":"b","challenge":"c","public_key":"AAAA"}',
+    "key-not-a-string": b'{"op":"protected_read","actor":"a","asset":"b","challenge":"c","public_key":5}',
     "deep": b"[" * 50000 + b"]" * 50000,
     "too-big": b'{"op":"audit","request_id":"' + b"a" * (1024 * 1024) + b'"}',
 }
