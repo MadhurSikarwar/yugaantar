@@ -113,6 +113,15 @@ class Authority:
 
             Vault(**record["vault"]).record_removal(set_name, item, at)
 
+    def _rotation_in_vault(self, record: dict, device: dict, entry: dict) -> None:
+        if record["vault"]:
+            from t4.backup import Vault
+
+            try:
+                Vault(**record["vault"]).record_rotation(device["keys"][0]["public_key"], entry)
+            except OSError:
+                raise NodeError("the rotation could not be recorded in the vault") from None
+
     # -- devices ---------------------------------------------------------
 
     def enroll(self, device_id: str, owner: str, public_key: str, now: float) -> None:
@@ -168,8 +177,11 @@ class Authority:
                 raise NodeError("an earlier rotation has not activated yet")
             if not activate_at > announced + record["T"] + record["s"]:
                 raise NodeError("activation time must be more than T + s ahead")
-            device["keys"].append({"version": version, "public_key": public_key,
-                                   "activate_at": activate_at})
+            entry = {"version": version, "public_key": public_key, "activate_at": activate_at}
+            device["keys"].append(entry)
+            # Vault first: if it cannot record the new key, nothing is published, because a
+            # later restore would silently make the replaced key current again.
+            self._rotation_in_vault(record, device, entry)
             self._event("rotate", device_id, "KEY-ROTATE",
                         {"owner": device["owner"], "version": version,
                          "activate_at": repr(activate_at),

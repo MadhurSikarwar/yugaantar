@@ -4,23 +4,32 @@ A vault has two places that must be separate from each other and from the
 directory being restored:
 
 * ``key_dir``: the HMAC-SHA-256 verification key and a ledger of removals
-  (revoked devices, actors and keys, and removed grants);
+  (revoked devices, actors and keys, and removed grants) and of the authority's
+  device key versions (public keys and activation times);
 * ``backup_dir``: numbered backup files.
 
+The first backup of an authority links it to the vault, so every later
+revocation, grant removal and rotation is written to the ledger. An authority
+belongs to one vault; backing it up into another is refused.
+
 Restore checks backups from newest to oldest, reports each damaged one, and uses
-the newest that verifies. It then re-applies every removal in the ledger and in
-the current state, if readable, so a restore never brings back access that was
-taken away after the backup.
+the newest that verifies. It then re-applies every removal and key version in the
+ledger and in the current state, if readable. So a restore neither brings back
+access that was taken away after the backup nor makes a replaced key current
+again. A backup of an unlinked authority (made by earlier code) is only restored
+over a readable authority: without one, later revocations could be lost.
 
 What it defends against: damaged, edited, truncated or swapped backups, and
-rollback of revocations through restore.
+rollback of revocations or rotations through restore.
 
 Limits, stated plainly: backups are authenticated but NOT encrypted (no vetted
 cipher is available to us), so they contain private keys in readable form and
-need the same protection as the live directory. Changes other than removals made
-after the chosen backup (enrollments, rotations, grants) are lost. Losing
-``key_dir`` makes restore impossible. Someone who controls ``key_dir`` can forge
-backups.
+need the same protection as the live directory. Enrollments and new grants made
+after the chosen backup are lost. The rotation protection covers the authority:
+restoring an old DEVICE backup loses that device's later private keys. What only
+a lost authority knew, from before it was linked, cannot be recovered. Restoring
+an older copy of ``key_dir`` loses what was recorded since. Losing ``key_dir``
+makes restore impossible. Someone who controls ``key_dir`` can forge backups.
 """
 from __future__ import annotations
 
@@ -39,6 +48,7 @@ from t4.node.state import FileStore, atomic_write, file_lock
 
 BACKUP_NAME = re.compile(r"backup-(\d{8,})\.json")  # 8 digits are the minimum, not a ceiling
 REMOVAL_SETS = ("revoked_devices", "revoked_actors", "revoked_keys", "removed_grants")
+AUTHORITY_RECORD = "authority"
 Fault = Callable[[str], None]
 
 
@@ -114,7 +124,7 @@ class Vault:
         atomic_write(vault.key_dir / "vault.key", key)
         atomic_write(vault.key_dir / "ledger.json", _seal(key, LEDGER_LABEL, {
             "subject": subject, "last_backup_id": 0,
-            "removals": {name: {} for name in REMOVAL_SETS}}))
+            "removals": {name: {} for name in REMOVAL_SETS}, "rotations": {}}))
         return vault
 
     @contextmanager
@@ -144,14 +154,47 @@ class Vault:
             ledger["removals"][set_name][item] = at if previous is None else max(previous, at)
             self._save_ledger(key, ledger)
 
+    def record_rotation(self, enrolled_key: str, entry: dict) -> None:
+        """Remember a device key version. ``enrolled_key`` is the device's version 1 public
+        key: unlike a device ID, it cannot come back as a different device after a restore."""
+        with self._ledger() as (key, ledger):
+            versions = ledger.setdefault("rotations", {}).setdefault(_fingerprint(enrolled_key), {})
+            versions[str(entry["version"])] = dict(entry)
+            self._save_ledger(key, ledger)
+
+    def _link(self, store: FileStore) -> None:
+        """Make the authority record its removals and rotations here from now on.
+
+        Committed on its own, BEFORE the backup is taken: a crash must never leave a usable
+        backup of an authority that does not write to this ledger.
+        """
+        with store.locked() as txn:  # Lock order: store, then vault.
+            record = txn.get(AUTHORITY_RECORD)
+            if record is None:
+                return  # ``backup`` reports it
+            linked = record.get("vault")
+            if linked:
+                if Path(linked["key_dir"]).resolve() != self.key_dir:
+                    raise BackupError("this authority is linked to another vault")
+                return
+            with self._ledger():
+                pass  # never link to a vault whose ledger cannot be used
+            record["vault"] = self.location()
+            txn.put(AUTHORITY_RECORD, record)
+
     def backup(self, store: FileStore, record_name: str, now: float,
                fault: Fault = no_fault) -> int:
         check_time(now)
+        if record_name == AUTHORITY_RECORD:
+            self._link(store)
         with store.locked() as txn:  # Lock order: store, then vault.
             record = txn.get(record_name)
             if record is None:
                 raise BackupError("nothing to back up")
             with self._ledger() as (key, ledger):
+                if record_name == AUTHORITY_RECORD:
+                    _remember(ledger, record)  # includes what happened before the link
+                    self._save_ledger(key, ledger)
                 existing = [int(m.group(1)) for p in self.backup_dir.iterdir()
                             if (m := BACKUP_NAME.fullmatch(p.name))]
                 backup_id = max([ledger["last_backup_id"], *existing]) + 1
@@ -198,7 +241,16 @@ class Vault:
             body, damaged = self._newest_good(key, ledger["subject"], record_name)
             fault("verified")
             record = body["record"]
+            authority = record_name == AUTHORITY_RECORD
+            if authority and current is None and not record.get("vault"):
+                raise BackupError("backup is of an authority not linked to a vault, so later "
+                                  "revocations may be missing; restore refused", tuple(damaged))
             _apply_removals(record, ledger["removals"], body["created_at"], current)
+            if authority:
+                _apply_rotations(record, ledger.get("rotations", {}), current)
+                record["vault"] = self.location()  # the vault may have been moved
+                _remember(ledger, record)
+                self._save_ledger(key, ledger)
             expected = max(ledger["last_backup_id"], body["id"])
             if expected > body["id"] and not any(
                     line.startswith(f"backup-{expected:08d}") for line in damaged):
@@ -207,6 +259,39 @@ class Vault:
             write({record_name: record}, lambda: fault("key-ready"))
             fault("state-written")
         return RestoreReport(body["id"], tuple(damaged), expected)
+
+
+def _fingerprint(public_key: str) -> str:
+    return hashlib.sha256(public_key.encode("ascii")).hexdigest()
+
+
+def _remember(ledger: dict, record: dict) -> None:
+    """Copy an authority record's revocations and device key versions into the ledger."""
+    for name in ("revoked_devices", "revoked_actors"):
+        for item, at in record[name].items():
+            ledger["removals"][name].setdefault(item, at)
+    rotations = ledger.setdefault("rotations", {})
+    for device in record["devices"].values():
+        versions = rotations.setdefault(_fingerprint(device["keys"][0]["public_key"]), {})
+        for entry in device["keys"]:
+            versions[str(entry["version"])] = dict(entry)
+
+
+def _apply_rotations(record: dict, rotations: dict, current: dict | None) -> None:
+    """Add every later key version, so a replaced key does not become current again.
+
+    A readable current state wins over the ledger, which may hold a publication that was
+    interrupted before the authority saved it. Devices enrolled after the backup stay lost.
+    """
+    for device_id, device in record["devices"].items():
+        enrolled_key = device["keys"][0]["public_key"]
+        keys = {entry["version"]: entry for entry in device["keys"]}
+        for entry in rotations.get(_fingerprint(enrolled_key), {}).values():
+            keys[entry["version"]] = dict(entry)
+        held = (current or {}).get("devices", {}).get(device_id)
+        if held and held["keys"][0]["public_key"] == enrolled_key:
+            keys.update({entry["version"]: dict(entry) for entry in held["keys"]})
+        device["keys"] = [keys[version] for version in sorted(keys)]
 
 
 def _apply_removals(record: dict, removals: dict, backup_time: float,
