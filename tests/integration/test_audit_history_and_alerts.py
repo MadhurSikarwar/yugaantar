@@ -126,3 +126,15 @@ def test_consistency_command_reports_lost_history(state):
     p = subprocess.run([sys.executable, "-m", "t4.consistency", "--state-dir", str(state)],
                        cwd=ROOT, capture_output=True, text=True)
     assert p.returncode == 1 and "audit history was lost" in p.stdout
+
+
+@pytest.mark.parametrize("key", ["", "AAAA", "!!!not base64", PUBLIC_KEY[:-4], PUBLIC_KEY + "\n", "\u00e9" * 20])
+def test_a_bad_public_key_does_not_change_who_is_allowed(state, key):
+    """Not allowed: the ordinary deny. Allowed: a clean error, nothing released."""
+    base = {"op": "protected_read", "asset": "a", "challenge": "c", "public_key": key}
+    assert call(state, {**base, "actor": "eve"})[:2] == (0, {"decision": "deny"})
+    assert call(state, {**base, "actor": "maya"}) == (1, None, "Request failed (invalid-input).")
+    call(state, {"op": "revoke", "actor": "maya"})
+    assert call(state, {**base, "actor": "maya"})[:2] == (0, {"decision": "deny"})
+    rules = [e["rule"] for e in entries(state / "audit")]
+    assert "CRY-KEY-REJECTED" in rules and "POL-NOT-OWNER" in rules and "POL-REVOKED" in rules

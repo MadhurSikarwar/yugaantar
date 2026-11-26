@@ -31,9 +31,10 @@ def test_short_row_rejected():
         parse_events(text)
 
 
-def test_duplicate_event_id_rejected():
-    with pytest.raises(ValueError, match="duplicate"):
-        parse_events(events_to_csv([row("e1", 0), row("e1", 1)]))
+def test_reused_event_id_keeps_the_first_record_and_notes_the_other():
+    parsed = parse_events(events_to_csv([row("e1", 0), row("e1", 1), row("e2", 2)]))
+    assert [e.event_id for e in parsed] == ["e1", "e2"]
+    assert parsed[0].conflict_count == 1 and len(parsed[0].conflicting) == 1
 
 
 @pytest.mark.parametrize("value", ["2026-01-15T09:00:00", "2026-01-15T09:00:00+05:30", "yesterday", ""])

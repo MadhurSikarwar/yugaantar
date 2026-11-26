@@ -78,6 +78,10 @@ Each line is a command, and each result has been reproduced (see `docs/evidence-
 | Latency per operation (cold process) | `python tools/bench.py` |
 | Demo-layer messaging refuses replays, wrong recipients and any changed field | `pip install -r requirements-demo.txt`, then `python -m pytest tests/unit/test_demo_messaging.py -q` |
 
+## Detector input
+
+Event files: columns are matched by name (extra ones are ignored); times are UTC written with `Z` or `+00:00`. If an event ID repeats, the first record is analysed; an identical re-delivery is ignored and a differing copy raises `DET-CONFLICTING-DUPLICATE`. The default roles, services and approver (`user-admin`) follow the toolkit's practice data. For other names use `--approver NAME` (repeatable) and `--policy FILE`; an unconfigured role raises `DET-ROLE-NOT-CONFIGURED`, and an approval by an approver you have not named counts as unapproved.
+
 ## Limits (short version)
 
 The full list is in `docs/threat-model.md`.

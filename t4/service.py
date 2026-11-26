@@ -309,6 +309,8 @@ class VaultService:
             # Authorized: only now touch the public key (PRD M-A2).
             body = state.body_of(request.asset) or ""
             try:
+                if request.public_key is None:
+                    raise ValueError("unusable public key")
                 ciphertext, shared_secret = self._deps.kem_factory().encapsulate(request.public_key)
                 proof = self._deps.proof_factory().make_proof(
                     shared_secret, request.challenge.encode("utf-8"), body.encode("utf-8")

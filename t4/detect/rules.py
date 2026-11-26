@@ -141,7 +141,8 @@ def match_grant(event: Event, approvals: Approvals, cfg: DetectConfig) -> RuleRe
     reasons = []
     for approval in candidates:
         if approval.approved_by not in cfg.authorized_approvers:
-            reasons.append(f"{approval.approval_id} approver {approval.approved_by} is not authorized")
+            reasons.append(f"{approval.approval_id} approver {approval.approved_by} is not authorized "
+                           "(authorized approvers are set with --approver)")
             continue
         if not approval.valid_at(moment):
             reasons.append(
