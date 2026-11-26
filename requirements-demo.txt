@@ -1,0 +1,3 @@
+# Demo layer only (demo/messaging.py). The adapter and everything under t4/ never import these.
+-r requirements.txt
+cryptography>=46
