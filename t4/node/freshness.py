@@ -35,7 +35,8 @@ ALERT_TEXT = {
     "NODE-ACTOR-REVOKED": "A revoked actor tried to use this node.",
     "NODE-OWNER-MISMATCH": "A device tried to act as an actor who does not own it.",
     "NODE-REPLAY": "A previously used signed request was presented again.",
-    "NODE-CLOCK-ROLLBACK": "This node's clock is behind a time it has already seen.",
+    "NODE-NONCE-STORE-FULL": "The replay-nonce store is full; requests are refused until entries expire.",
+    "NODE-CLOCK-ROLLBACK":"This node's clock is behind a time it has already seen.",
 }
 
 

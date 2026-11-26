@@ -69,7 +69,8 @@ LOG_SUBDIR = "log"
 # Node rules meaning "valid signature, but not sent by its signer to this node
 # at this time": attributing these to the signer would let anyone who captures
 # one request frame its signer (c3-to-c4-002).
-NOT_FROM_SIGNER_RULES = frozenset({"NODE-WRONG-NODE", "NODE-REPLAY", "NODE-EXPIRED"})
+NOT_FROM_SIGNER_RULES = frozenset({"NODE-WRONG-NODE", "NODE-REPLAY", "NODE-EXPIRED",
+                                   "NODE-KEY-INACTIVE"})
 # The node checks `actor == device owner` only AFTER the wrong-node and revoked-device/actor
 # checks. A request denied at one of these rules (or at the owner check itself) proves the
 # signature, not that the claimed actor is the signer's owner, so the actor name must not be

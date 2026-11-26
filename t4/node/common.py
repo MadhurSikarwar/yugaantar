@@ -116,6 +116,10 @@ def check_text(value: Any) -> str:
     """Identifiers are opaque: any characters, non-empty, bounded length."""
     if not isinstance(value, str) or not 0 < len(value) <= MAX_TEXT:
         raise NodeError("invalid text field")
+    try:
+        value.encode("utf-8")  # a lone surrogate cannot be exported or hashed as UTF-8
+    except UnicodeEncodeError:
+        raise NodeError("invalid text field") from None
     return value
 
 
