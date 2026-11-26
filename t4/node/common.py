@@ -53,7 +53,7 @@ except ImportError:
 
     @dataclass(frozen=True)
     class Decision:  # type: ignore[no-redef]
-        """Same fields as PRD 5.1."""
+        """Same fields as the shared Decision type."""
 
         allow: bool
         reason: str

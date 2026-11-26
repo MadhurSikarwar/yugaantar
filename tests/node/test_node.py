@@ -1,4 +1,4 @@
-"""Node layer: M-N1, M-N2, M-N3, M-N5 and PRD section 8 item 6."""
+"""Node layer tests."""
 from __future__ import annotations
 
 import copy

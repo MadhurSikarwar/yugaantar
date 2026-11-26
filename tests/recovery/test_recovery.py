@@ -1,4 +1,4 @@
-"""Rotation, backup and restore: M-A7, M-A8, PRD section 8 items 9 and 10."""
+"""Rotation, backup and restore tests."""
 from __future__ import annotations
 
 import os
