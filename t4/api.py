@@ -1,6 +1,12 @@
 """Shared interfaces for every module (owner: c1; changes go through c1).
 
-API VERSION: 1  (bump this number and tell all agents when anything changes)
+API VERSION: 2  (bump this number and tell all agents when anything changes)
+
+Change log
+    2  RotationApi / BackupVaultApi / node interfaces now describe what c3 built (c3-to-c1-002);
+       AuditLogApi gained ``alert``; ``StoreFullError`` added. ``tests/unit/test_api_contract.py``
+       compares every interface below with the real module whenever it is present.
+    1  first version
 
 This module holds only types: dataclasses, errors and ``typing.Protocol``
 interfaces. No module implements anything here; each Protocol names the file
@@ -20,9 +26,9 @@ from __future__ import annotations
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping, Protocol, runtime_checkable
+from typing import Callable, Iterable, Mapping, Protocol, runtime_checkable
 
-API_VERSION = 1
+API_VERSION = 2
 
 # ---------------------------------------------------------------------------
 # Errors. Every one of these is mapped to a generic failure by the adapter:
@@ -139,7 +145,7 @@ class AuditSink(Protocol):
         decision: str,
         rule: str,
         request_id: str,
-        detail: Mapping[str, str | int | bool],
+        detail: Mapping[str, str | int | bool] | None = None,
     ) -> dict:
         """Append one entry and flush it. Returns ``{"seq": int, "hash": str}``."""
         ...
@@ -148,13 +154,28 @@ class AuditSink(Protocol):
 class AuditLogApi(AuditSink, Protocol):
     """Full interface of ``t4.audit.log.AuditLog`` (PRD 5.1)."""
 
+    def alert(
+        self,
+        *,
+        rule: str,
+        explanation: str,
+        actor: str = "",
+        target: str = "",
+        request_id: str = "",
+        entries: Iterable[int] = (),
+        request_ids: Iterable[str] = (),
+        detail: Mapping[str, str | int | bool] | None = None,
+    ) -> dict:
+        """Record an alert with its triggering entry numbers and request IDs (PRD M-A12)."""
+        ...
+
     def head(self) -> dict: ...  # {"seq", "hash", "sig"}
 
     def explain(self, request_id: str) -> list[dict]: ...
 
     def find(self, **match: str) -> list[dict]: ...
 
-    def verify(self, pinned_head: dict | None = None) -> object: ...
+    def verify(self, pinned_head: dict | None = None, pinned_public_key: bytes | None = None) -> object: ...
 
 
 @runtime_checkable
@@ -188,65 +209,92 @@ class ProofProvider(Protocol):
 
 
 # ---------------------------------------------------------------------------
-# Rotation and backup (c3: t4/rotation.py, t4/backup.py)
-# Signatures proposed by c1; c3 may ask for changes through a request file.
+# Rotation, backup and the node layer (c3: t4/rotation.py, t4/backup.py, t4/node/*)
+# These describe what c3 built (coord/requests/c3-to-c1-002.md). Rotation and the
+# node functions are module-level functions; the module itself is the provider.
 # ---------------------------------------------------------------------------
 
-
-@dataclass(frozen=True)
-class RecoveryReport:
-    action: str  # "none" | "rolled_back" | "rolled_forward"
-    rotation_id: str | None
-    active_key_version: int
-
-
-@dataclass(frozen=True)
-class BackupInfo:
-    path: Path
-    created_epoch: int
-    verified_by: str  # name of the verification key, never its value
-
-
-@dataclass(frozen=True)
-class RestoreReport:
-    ok: bool
-    reason: str  # fixed label, e.g. "verified", "bad-tag", "truncated"
-    restored_epoch: int | None
+# A fault hook is called with the name of a step. Tests use it to raise or exit at
+# exactly that step, which simulates a crash.
+Fault = Callable[[str], None]
 
 
 class RotationApi(Protocol):
-    def prepare(self, *, device_id: str, new_public_key: bytes, activation_time: float) -> str:
-        """Journal ``PREPARED``; returns the rotation ID."""
+    """``t4.rotation``: functions on a device store (journal PREPARED, COMMITTED, applied)."""
+
+    def begin_rotation(
+        self, store: Store, signer: Signer, activate_at: float, fault: Fault = ..., *, now: float | None = None
+    ) -> int:
+        """Create and commit the next key version locally; returns its version number."""
         ...
 
-    def commit(self, rotation_id: str) -> None:
-        """Single atomic pointer swap to the new key version (the commit point)."""
+    def recover(self, store: Store) -> dict:
+        """Finish or undo an interrupted rotation, then return the keyring."""
         ...
 
-    def recover(self) -> RecoveryReport:
-        """Run on every load: roll back without a commit marker, forward with one."""
+    def mark_published(self, store: Store, version: int, activate_at: float) -> None:
+        """Record the authority's acceptance and adopt its activation time."""
+        ...
+
+    def signing_key(self, store: Store, now: float) -> tuple[int, bytes]:
+        """The one key this device may sign with at ``now``: ``(version, secret_key)``."""
+        ...
+
+    def revoke_key(self, store: Store, version: int, at: float, vault: "BackupVaultApi | None" = None) -> None:
+        """Add a version to the revoked set. There is no way to remove it."""
         ...
 
 
-class BackupApi(Protocol):
-    def create(self, destination: Path) -> BackupInfo: ...
+class RestoreReportApi(Protocol):
+    """What ``t4.backup.RestoreReport`` exposes."""
 
-    def restore(self, source: Path, *, verification_key: bytes) -> RestoreReport:
-        """Verify before use; never remove a revocation newer than the backup."""
+    used_id: int
+    damaged: tuple[str, ...]
+    newest_expected_id: int
+
+    @property
+    def fell_back(self) -> bool: ...
+
+
+class BackupVaultApi(Protocol):
+    """``t4.backup.Vault``: authenticated backups; the verification key is kept apart from them.
+
+    ``BackupError(message, damaged=())`` (defined in ``t4.backup``) is raised when no backup
+    verifies or the vault itself is damaged.
+    """
+
+    @classmethod
+    def create(cls, key_dir: str | Path, backup_dir: str | Path, subject: str) -> "BackupVaultApi": ...
+
+    def location(self) -> dict[str, str]: ...
+
+    def record_removal(self, set_name: str, item: str, at: float) -> None: ...
+
+    def backup(self, store: Store, record_name: str, now: float, fault: Fault = ...) -> int: ...
+
+    def restore(self, target: str | Path, record_name: str, fault: Fault = ...) -> RestoreReportApi:
+        """Restore into ``target``; safe to run again after a crash. Never drops a newer revocation."""
         ...
 
 
-# ---------------------------------------------------------------------------
-# Node layer (c3: t4/node/*). Signatures from PRD 5.1.
-# ---------------------------------------------------------------------------
+class NodeRequestApi(Protocol):
+    """``t4.node.request``"""
 
-
-class NodeApi(Protocol):
-    def sign_request(self, device_sk: bytes, fields: Mapping[str, object]) -> dict: ...
+    def sign_request(self, device_sk: bytes, fields: Mapping[str, object], *, signer: Signer | None = None) -> dict: ...
 
     def handle_request(self, node: object, signed: Mapping[str, object], now: float) -> Decision: ...
 
+    def respond(self, node: object, signed: Mapping[str, object], now: float) -> dict: ...
+
+
+class NodeAuthorityApi(Protocol):
+    """``t4.node.authority``"""
+
     def issue_list(self, authority: object, now: float) -> dict: ...
+
+
+class NodeFreshnessApi(Protocol):
+    """``t4.node.freshness``"""
 
     def accept_list(self, node: object, signed_list: Mapping[str, object], now: float) -> bool:
         """False on a bad signature, an old ``seq`` or a stale ``issued_at``."""
