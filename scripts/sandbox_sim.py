@@ -60,6 +60,31 @@ def skip(name: str, why: str) -> None:
     print(f"SKIP  {name}: {why}", flush=True)
 
 
+def normalize_python(path: str) -> str:
+    """Make the interpreter path absolute WITHOUT following symlinks.
+
+    On Linux a virtual environment's `python` is a symlink to the base interpreter. Resolving it would
+    silently drop the venv (and its packages), so the adapter would run without pqcrypto.
+    """
+    return os.path.abspath(path) if (os.sep in path or "/" in path) else path
+
+
+def preflight(python: str) -> None:
+    """Fail early and clearly if the adapter's interpreter cannot run the product."""
+    done = subprocess.run(
+        [python, "-c", "import sys, pqcrypto.kem.ml_kem_768, pqcrypto.sign.ml_dsa_65; print(sys.version_info[:2])"],
+        capture_output=True, text=True, timeout=60,
+    )
+    if done.returncode != 0:
+        raise SystemExit(
+            f"The interpreter used for the adapter cannot import pqcrypto: {python}\n"
+            "Run this script with the virtual environment's python (the one where you installed pqcrypto==0.4.0),\n"
+            f"or pass --python PATH. Error: {done.stderr.strip()[-200:]}"
+        )
+    if done.stdout.strip() != "(3, 12)":
+        print(f"WARNING: the judging runtime is Python 3.12; this interpreter reports {done.stdout.strip()}")
+
+
 # --- building the clean, read-only submission ------------------------------------------------------
 
 
@@ -263,9 +288,19 @@ def latency(sb: Sandbox) -> None:
         "protected_read": lambda i: {"op": "protected_read", "actor": "u", "asset": "a", "challenge": "c", "public_key": public_key},
     }
     for name, make in requests.items():
-        times = sorted(sb.call(make(i), env)[3] for i in range(12))
+        times, bad = [], 0
+        for i in range(12):
+            rc, out, err, seconds = sb.call(make(i), env)
+            times.append(seconds)
+            try:
+                reply = json.loads(out) if rc == 0 else None
+            except ValueError:
+                reply = None
+            expected_ok = reply is not None and (("ciphertext" in reply) if name == "protected_read" else (reply.get("decision") in ("allow", "deny") if name != "audit" else "request_id" in reply))
+            bad += 0 if expected_ok else 1
+        times.sort()
         p50, p95 = statistics.median(times), times[int(len(times) * 0.95) - 1]
-        record(f"cold-process latency {name}: p50 {p50 * 1000:.0f} ms, p95 {p95 * 1000:.0f} ms (limit {OP_TIMEOUT:.0f} s)", p95 < OP_TIMEOUT)
+        record(f"cold-process latency {name}: p50 {p50 * 1000:.0f} ms, p95 {p95 * 1000:.0f} ms (limit {OP_TIMEOUT:.0f} s), {12 - bad}/12 correct replies", p95 < OP_TIMEOUT and bad == 0)
 
 
 def official_validator(sb: Sandbox, toolkit: Path, python: str) -> None:
@@ -323,12 +358,13 @@ def main() -> int:
     args = parser.parse_args()
     if args.toolkit:
         args.toolkit = str(Path(args.toolkit).resolve())  # the validator runs from another folder: a relative path would break
-    args.python = str(Path(args.python).resolve()) if os.sep in args.python or "/" in args.python else args.python
+    args.python = normalize_python(args.python)
 
     try:
         import pqcrypto.kem.ml_kem_768  # noqa: F401  (client side of the protected_read check)
     except ImportError:
         raise SystemExit("pqcrypto is needed by this script: pip install pqcrypto==0.4.0")
+    preflight(args.python)
 
     work = Path(tempfile.mkdtemp(prefix="t4-sandbox-"))
     try:
