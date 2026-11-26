@@ -172,3 +172,31 @@ def test_accepts_node_directory_with_log_subfolder(tmp_path):
     (tmp_path / "log" / "audit.jsonl").write_bytes(b"")
     assert exp.log_directory(tmp_path) == tmp_path / "log"
     assert exp.log_directory(tmp_path / "log") == tmp_path / "log"
+
+
+def test_over_long_identifiers_do_not_break_the_export(world):
+    """c5-to-c4-002: a 4,096-character actor or asset must not make the export fail."""
+    dirs, sources = world
+    clock_log = AuditLog(dirs["node-a"], load_or_create_signer(dirs["node-a"]))
+    long_actor = "A" * 4096
+    long_asset = "f" * 4096
+    for verified in (False, True):
+        clock_log.append(actor=long_actor, action="read", target=long_asset, decision="deny",
+                         rule="NODE-BAD-SIGNATURE" if not verified else "NODE-NOT-OWNER",
+                         request_id="r-long-" + str(verified),
+                         detail={"node_id": "node-a", "device_id": "d" * 4096, "signature_verified": verified})
+    clock_log.head()
+    result = exp.run_export(sources, _change_register(), owners=OWNERS)
+    rows = [r for r in result.rows if r["correlation_id"].startswith("r-long-")]
+    assert len(rows) == 2
+    for row in rows:
+        assert all(len(str(v)) <= exp.MAX_FIELD_CHARS for v in row.values())
+    verified_row = next(r for r in rows if r["correlation_id"] == "r-long-True")
+    assert verified_row["actor"] == long_actor  # exactly 4,096: fits, kept as is
+    assert verified_row["target_service"].startswith("node-a/fff") and "sha256:" in verified_row["target_service"]
+    unverified_row = next(r for r in rows if r["correlation_id"] == "r-long-False")
+    assert unverified_row["actor"] == exp.UNVERIFIED_ACTOR
+    assert "sha256:" in unverified_row["source_service"]  # "claimed:" + 4,096 chars
+    # Two different over-long values stay distinct after fitting.
+    assert exp.fit_field("x" * 5000 + "1") != exp.fit_field("x" * 5000 + "2")
+    assert exp.fit_field("short") == "short"
