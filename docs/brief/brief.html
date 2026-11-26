@@ -30,7 +30,7 @@
 <h1>Trust, but verify: post-quantum protected files with verifiable decisions</h1>
 <table class="meta">
 <tr><td><b>Project</b></td><td>Track 4, Yugaantar DevForge</td><td><b>Team</b></td><td class="todo">[team name and members]</td></tr>
-<tr><td><b>Repository</b></td><td>https://github.com/MadhurSikarwar/yugaantar</td><td><b>Commit</b></td><td class="todo">[final tag hash]</td></tr>
+<tr><td><b>Repository</b></td><td>https://github.com/MadhurSikarwar/yugaantar</td><td><b>Commit</b></td><td class="todo">[final tag, e.g. v1.0.0-track4-final]</td></tr>
 <tr><td><b>Demo entry point</b></td><td colspan="3"><code>python demo/run_demo.py</code> (one command, synthetic data; see README)</td></tr>
 </table>
 
@@ -55,16 +55,17 @@ operator: verify-log (pinned head + key) · explain · detector over our own ver
 <h2>Five-minute fallback video</h2>
 <p><b>Video link:</b> <span class="todo">[public URL]</span> &nbsp; <b>Duration:</b> 5 minutes &nbsp; <b>Access checked:</b> <span class="todo">[date, opened while logged out]</span></p>
 
-<p><b>Observed outcome.</b> These are from a clean Linux run on 2026-11-26: WSL Ubuntu 24.04, Python 3.12.3, <code>pqcrypto</code> 0.4.0. It used a fresh clone of the integration branch <code>62db7d3</code> (c1 <code>b583d8f</code>, c2 <code>15245c7</code>, c3 <code>55b4a9f</code>, c4 <code>d2dc5fc</code>), followed the README steps, and kept the repository read-only.
+<p><b>Observed outcome.</b> The first four results are from the release candidate <code>ebb01bc</code> on Linux (Ubuntu 26.04 under WSL2, Python 3.12.16, <code>pqcrypto</code> 0.4.0, not the organizers' sandbox). The rest are from the earlier runs listed in the evidence sheet.
 <ul>
-<li>The official validator exits 0, and 630 tests pass.</li>
-<li>The one-command demo passes all its checks.</li>
+<li>The official validator exits 0, and 817 tests pass with none skipped.</li>
 <li>Our PRD section 8 red-team suite: 251 checks passed, 0 failed.</li>
-<li>Cold-process latency: p50 92 to 116 ms, p95 at most 153 ms, peak memory 20 MB.</li>
+<li>Real-kill test: 1,000 SIGKILLs during key rotation, 0 failures.</li>
+<li>Our judging-worker simulator passes, and the one-command demo passes all its checks.</li>
+<li>Cold-process latency on Linux: p50 about 110 ms (the target is 200 ms).</li>
 <li>Simulated revocation across 4 nodes, 20 runs: last node enforced after at most 58 s against a 62 s bound, 0 violations.</li>
 <li>Detector: 22/22 practice events correct. On 12,060 held-out generated events, 95.3% of labels are correct, with 11 false alerts per 1,000 benign events.</li>
 </ul>
-Run details and commands are in <code>docs/evidence-sheet.md</code>.</p>
+Details are in <code>docs/FINAL_TEST_RESULTS.md</code> and <code>docs/evidence-sheet.md</code>.</p>
 </section>
 
 <section class="page">
@@ -110,7 +111,7 @@ Run details and commands are in <code>docs/evidence-sheet.md</code>.</p>
 <ul>
 <li><b>No caller authentication in the adapter.</b> Anyone can claim any actor.</li>
 <li>Whoever can write a directory can read its signing key and rebuild its log. A pin exposes this only up to the pinned entry. Entries after the newest checkpoint or pin can be cut unnoticed. A full rollback of a state directory is not detectable locally.</li>
-<li><b>Remaining after review fixes:</b> about 700,000 revocations of new names (measured at 72 bytes each) fill the state store, after which new revocations fail. Audit logs grow without limit (5 to 25 KB per hostile 4 KiB read). The running service catches tampering only in recent log entries. Older edits need an operator's <code>verify-log</code>. The authority does not authenticate its operator, including for rotation. Backups are not encrypted, and a restore loses newer enrolments and grants. An accepted list may be missing from a node log if the write fails.</li>
+<li><b>Remaining after review fixes:</b> about 700,000 revocations of new names (measured at 72 bytes each) fill the state store, after which new revocations fail. Audit logs grow without limit (5 to 25 KB per hostile 4 KiB read). The running service fully re-checks logs up to 256 KiB on each write. Older parts of larger logs need an operator's <code>verify-log</code>. The authority does not authenticate its operator, including for rotation. Backups are not encrypted, and a restore loses newer enrolments and grants. An accepted list may be missing from a node log if the write fails.</li>
 <li>No transport encryption and no forward secrecy (goals 9 to 12 are not supported). A reused <code>protected_read</code> challenge is accepted.</li>
 <li>The detector is measured only on synthetic data: 22 practice rows cannot establish accuracy, and the held-out set reflects our own assumptions. Linux was tested locally and in Docker, not on the organizer sandbox. A state folder we own is made private (0700). In a shared folder like /tmp, we use our own subfolder.</li>
 </ul>
