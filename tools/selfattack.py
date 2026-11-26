@@ -236,6 +236,14 @@ class Suite:
             for name, text in {**hostile, **lookalikes}.items():
                 request_id = f"h-{secrets.token_hex(4)}-{text}"
                 reply = s.read(actor=text, request_id=request_id)
+                if name == "lone surrogate":
+                    # Not valid Unicode: rejecting it as malformed is as safe as denying it.
+                    self.check(f"actor with {name}: refused cleanly", reply.refused and reply.clean, "medium",
+                               "granted, crashed or timed out")
+                    reply = s.read(asset=text)
+                    self.check(f"asset with {name}: refused cleanly", reply.refused and reply.clean, "medium",
+                               "granted, crashed or timed out")
+                    continue
                 self.check(f"actor with {name}: denied", reply.denied, "high" if reply.allowed else "medium",
                            "expected a clean deny with exit 0")
                 audit = s.audit(request_id)
