@@ -1,4 +1,4 @@
-"""Authenticated key backups and safe restore (M-A8).
+"""Authenticated key backups and safe restore.
 
 A vault has two places that must be separate from each other and from the
 directory being restored:

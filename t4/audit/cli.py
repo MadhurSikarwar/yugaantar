@@ -1,4 +1,4 @@
-"""Operator commands for an audit log (PRD M-A10, M-A12).
+"""Operator commands for an audit log.
 
     python -m t4.audit.cli --dir DIR head [--out FILE]
     python -m t4.audit.cli --dir DIR verify-log [--pin FILE]

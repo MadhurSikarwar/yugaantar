@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The 5-minute lost-device story in one command (PRD M-D7).
+"""The 5-minute lost-device story in one command.
 
     python demo/run_demo.py [--pause] [--keep]
 

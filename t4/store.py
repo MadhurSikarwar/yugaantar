@@ -1,4 +1,4 @@
-"""Durable, locked, integrity-checked state (owner: c1; PRD 4.1, M-A6).
+"""Durable, locked, integrity-checked state.
 
 What it does
     Every request runs in a brand-new process, so everything that must survive
@@ -15,7 +15,7 @@ How it is built (and which attack each part answers)
       document plus a monotonically increasing ``version`` and an HMAC-SHA256
       tag over both. Because everything is in a single file, a crash cannot
       leave documents from two different versions side by side, and swapping a
-      single file cannot mix old and new documents (red-team item 4).
+      single file cannot mix old and new documents (self-attack item 4).
     * Atomic replace: write a temp file in the same directory, flush, fsync,
       ``os.replace``, then fsync the directory (POSIX). A crash leaves either
       the old or the new state, never a torn one.
@@ -37,7 +37,7 @@ Honest limits (also stated in the threat model)
       tampering, not that attacker.
     * A **full rollback** (restoring an older copy of the whole directory)
       passes every check here. It cannot be detected from this directory alone;
-      the pinned audit head (PRD 4.1) is what exposes lost log entries.
+      the pinned audit head  is what exposes lost log entries.
 """
 from __future__ import annotations
 

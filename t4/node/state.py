@@ -1,12 +1,12 @@
 """Locked, atomic, integrity-checked state for the authority, devices and nodes.
 
-It follows the ``Store``/``Txn`` interface of PRD 5.1. All records live in one
+It follows the ``Store``/``Txn`` interface. All records live in one
 file, so a commit is a single atomic replace.
 
 What it defends against: half-written state after a crash, two processes
 updating at once, accidental corruption and naive edits (the file fails closed).
 What it does not defend against: someone who can read the state key and write
-the directory, or who restores an older copy of the whole directory (PRD 4.1).
+the directory, or who restores an older copy of the whole directory.
 """
 from __future__ import annotations
 

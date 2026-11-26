@@ -49,22 +49,22 @@ operator: verify-log (pinned head + key) · explain · detector over our own ver
 <li><b>Identity and authorization.</b> The judged adapter enforces permissions on the stated <code>actor</code>. The contract carries no credential, so it does not authenticate callers. Device identity is verified in the node layer by ML-DSA-65 signatures.</li>
 <li><b>Keys.</b> These are generated at runtime and never stored in the repository. The adapter's audit key and the authority and device keys are ML-DSA-65. Key rotation is journalled (PREPARED, then COMMITTED) with activation time C more than T + s ahead and no grace period. Backups are HMAC-authenticated.</li>
 <li><b>Libraries.</b> <code>pqcrypto==0.4.0</code> (ML-KEM-768, ML-DSA-65) and the Python standard library (HMAC, SHA-256). No custom crypto, no ML.</li>
-<li><b>Working:</b> all five operations, the node layer, rotation, backup, signed logs, the detector, the red-team suite and the simulation. <b>Not built:</b> encrypted messaging (goals 9 to 12).</li>
+<li><b>Working:</b> all five operations, the node layer, rotation, backup, signed logs, the detector, the attack suite and the simulation. <b>Not built:</b> encrypted messaging (goals 9 to 12).</li>
 </ul>
 
 <h2>Five-minute fallback video</h2>
 <p><b>Video link:</b> <span class="todo">[public URL]</span> &nbsp; <b>Duration:</b> 5 minutes &nbsp; <b>Access checked:</b> <span class="todo">[date, opened while logged out]</span></p>
 
-<p><b>Observed outcome.</b> These are from a clean Linux run on 2026-11-26: WSL Ubuntu 24.04, Python 3.12.3, <code>pqcrypto</code> 0.4.0. It used a fresh clone of the integration branch <code>62db7d3</code> (c1 <code>b583d8f</code>, c2 <code>15245c7</code>, c3 <code>55b4a9f</code>, c4 <code>d2dc5fc</code>), followed the README steps, and kept the repository read-only.
+<p><b>Observed outcome.</b> These are from a clean Linux run on 2026-11-26: WSL Ubuntu 24.04, Python 3.12.3, <code>pqcrypto</code> 0.4.0. It used a fresh clone of the integration branch an earlier commit (c1 <code>b583d8f</code>, c2 <code>15245c7</code>, c3 <code>55b4a9f</code>, c4 <code>d2dc5fc</code>), followed the README steps, and kept the repository read-only.
 <ul>
 <li>The official validator exits 0, and 630 tests pass.</li>
 <li>The one-command demo passes all its checks.</li>
-<li>Our PRD section 8 red-team suite: 251 checks passed, 0 failed.</li>
+<li>Our own attack suite: 251 checks passed, 0 failed.</li>
 <li>Cold-process latency: p50 92 to 116 ms, p95 at most 153 ms, peak memory 20 MB.</li>
 <li>Simulated revocation across 4 nodes, 20 runs: last node enforced after at most 58 s against a 62 s bound, 0 violations.</li>
 <li>Detector: 22/22 practice events correct. On 12,060 held-out generated events, 95.3% of labels are correct, with 11 false alerts per 1,000 benign events.</li>
 </ul>
-Run details and commands are in <code>docs/evidence-sheet.md</code>.</p>
+Setup and the commands that reproduce these results are in the repository README.</p>
 </section>
 
 <section class="page">
@@ -95,7 +95,7 @@ Run details and commands are in <code>docs/evidence-sheet.md</code>.</p>
 <h2>Assumptions</h2>
 <p>The adapter's caller states the true actor. Node clocks are within s = 2 s. The authority and nodes are not compromised. <code>pqcrypto</code> is correct. Pins are stored elsewhere.</p>
 
-<h2>Defenses (each tested; see the evidence sheet)</h2>
+<h2>Defenses (each tested; see the README)</h2>
 <ul>
 <li>Deny by default, with a uniform deny response. Revocation is persisted before the reply, and peers are unaffected.</li>
 <li>Strict input checks give a generic error and no traceback.</li>
