@@ -6,7 +6,7 @@ Yugaantar DevForge, Track 4. A protected-file service for the lost-device case:
 - a second owner still reads their own file
 - an operator can see in a tamper-evident log which rule decided each request
 
-**USP:** every allow, deny and alert is logged with the rule and events behind it. Anyone holding a pinned checkpoint and the public key can verify that the log up to that point has not been altered. Tamper detection needs an operator to run `verify-log` against a pin kept outside the directory. The running service doesn't check the whole log on every request.
+**USP:** every allow, deny and alert is logged with the rule and events behind it. Anyone holding a pinned checkpoint and the public key can verify that the log up to that point has not been altered. Full tamper detection needs an operator to run `verify-log` against a pin kept outside the directory. The running service re-checks only the recent part of the log on each request.
 
 - **Post-quantum parts:** ML-KEM-768 for the `protected_read` proof. ML-DSA-65 for audit checkpoints, device requests and revocation lists.
 - **What it does not do:** it doesn't encrypt files in transit, and the judged adapter doesn't authenticate callers (it trusts the `actor` string and enforces permissions). Device identity is verified in the node layer. See `docs/threat-model.md`.
@@ -77,7 +77,7 @@ The full list is in `docs/threat-model.md`.
 - Anyone with write access to a directory can read its signing key.
 - No transport encryption or forward secrecy (goals 9 to 12 are not supported).
 - The detector is measured only on synthetic data.
-- An edit to an older log entry is caught by `verify-log`, not by the running service. `audit`'s `rule` field reveals denial reasons to any caller.
+- The running service catches log tampering only in recent entries (and then fails closed). Older edits are caught by `verify-log`. `audit`'s `rule` field reveals denial reasons to any caller (accepted, `coord/DECISIONS.md` D-004).
 - Some review findings are still open (listed in the threat model).
 
 ## Attribution

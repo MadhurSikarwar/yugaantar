@@ -63,6 +63,10 @@ UNVERIFIED_ACTOR = "(unverified)"
 # Key events other than grants are routine administration by the authority.
 ADMIN_ACTIONS = frozenset({"enroll", "rotate", "revoke_device", "revoke_actor"})
 LOG_SUBDIR = "log"
+# Node rules meaning "valid signature, but not sent by its signer to this node
+# at this time": attributing these to the signer would let anyone who captures
+# one request frame its signer (c3-to-c4-002).
+NOT_FROM_SIGNER_RULES = frozenset({"NODE-WRONG-NODE", "NODE-REPLAY", "NODE-EXPIRED"})
 
 
 class ExportError(Exception):
@@ -211,7 +215,15 @@ def convert(node_logs: Mapping[str, Sequence[dict]], key_events: Sequence[dict],
             asset = entry["target"]
             event_id = f"{node_id}#{entry['seq']}"
             device = _detail(entry, "device_id") or "no-device"
-            if entry.get("detail", {}).get("signature_verified") is True:
+            verified = entry.get("detail", {}).get("signature_verified") is True
+            if verified and entry.get("rule") in NOT_FROM_SIGNER_RULES:
+                # A genuine signature reused where or when its signer did not
+                # send it (captured and forwarded to another node, replayed,
+                # or delayed past the window). The node denied it; it proves
+                # nothing about the signer's own behaviour, so it must not
+                # make the signer look like they probed several nodes.
+                actor, source = UNVERIFIED_ACTOR, f"forwarded:{entry['actor']}"
+            elif verified:
                 actor, source = entry["actor"], f"device:{device}"
             else:
                 # The actor name is only a claim: never count it as that
