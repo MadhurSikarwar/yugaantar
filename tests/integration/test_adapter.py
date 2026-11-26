@@ -201,6 +201,26 @@ def test_invalid_input_is_alerted_in_the_audit_log(adapter):
     assert b"AUD-INVALID-INPUT" in logged
 
 
+# --- c2's security review: state growth and an interrupted first setup ----------------------------------------
+
+
+def test_a_flood_of_4kib_identifiers_does_not_disable_the_service(adapter):
+    provision(adapter)
+    junk = "" * 4080  # plus a short counter stays inside the 4 KiB identifier cap
+    for i in range(30):
+        adapter.call(op="read", actor="maya", asset="brief", request_id=junk + str(i))
+    assert (adapter.state_dir / "state.json").stat().st_size < 100_000  # about 740 KB before the fix
+    assert adapter.call(op="revoke", actor="maya") == {}
+    assert adapter.call(op="read", actor="maya", asset="brief", request_id="later") == {"decision": "deny"}
+    assert adapter.call(op="read", actor="ravi", asset="notes", request_id="owner2") == {"decision": "allow", "body": "ravi body"}
+
+
+def test_an_empty_key_file_from_an_interrupted_first_setup_does_not_block_setup(adapter):
+    (adapter.state_dir / "state.key").write_text("")
+    provision(adapter)
+    assert adapter.call(op="read", actor="maya", asset="brief", request_id="r") == {"decision": "allow", "body": "demo note"}
+
+
 # --- tampering ------------------------------------------------------------------------------------------
 
 

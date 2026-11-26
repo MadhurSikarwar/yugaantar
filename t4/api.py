@@ -54,6 +54,16 @@ class StoreBusyError(Track4Error):
     category = "busy"
 
 
+class StoreFullError(Track4Error):
+    """The new state would be too large to load back, so it was not written.
+
+    Refusing to write keeps the previous (loadable) state intact: the service
+    degrades instead of bricking itself.
+    """
+
+    category = "store-full"
+
+
 class DependencyError(Track4Error):
     """A required module (audit log, crypto) is missing or unusable."""
 

@@ -146,7 +146,8 @@ def test_request_index_is_bounded_and_evicts_the_oldest(monkeypatch):
     state = provisioned()
     for i in range(5):
         state.remember_request(f"r{i}", "deny", RULE_NOT_OWNER, i)
-    assert sorted(state.requests) == ["r2", "r3", "r4"]
+    assert [state.first_record(f"r{i}") is not None for i in range(5)] == [False, False, True, True, True]
+    assert len(state.requests) == 3
 
 
 def test_persistence_roundtrip(state_dir):
@@ -216,7 +217,7 @@ def test_guard_state_roundtrips_through_its_document():
         guard.on_denial("a", asset="x", entry_seq=1)
     again = Guard(guard.to_doc())
     assert again.to_doc() == guard.to_doc()
-    assert again.on_denial("a", asset="x", entry_seq=2) == [] and again.to_doc()["denials"]["a"] == 4
+    assert again.on_denial("a", asset="x", entry_seq=2) == [] and again.to_doc()["denials"][identity.identifier_key("a")] == 4
 
 
 def test_tracked_identities_are_capped():

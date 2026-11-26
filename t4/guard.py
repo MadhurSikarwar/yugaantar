@@ -32,6 +32,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from t4.identity import identifier_key
+
 RULE_REPEATED_DENIAL = "GRD-REPEATED-DENIAL"
 RULE_DUPLICATE_ID = "AUD-DUPLICATE-REQUEST-ID"
 RULE_INVALID_INPUT = "AUD-INVALID-INPUT"
@@ -83,7 +85,8 @@ class Guard:
     # -- events -----------------------------------------------------------
 
     def on_denial(self, actor: str, *, asset: str, entry_seq: int, request_id: str = "") -> list[Alert]:
-        key = actor if (actor in self._denials or len(self._denials) < MAX_TRACKED_ACTORS) else OTHER_BUCKET
+        actor_key = identifier_key(actor)  # fixed size: a 4 KiB identifier must not cost 4 KiB of state
+        key = actor_key if (actor_key in self._denials or len(self._denials) < MAX_TRACKED_ACTORS) else OTHER_BUCKET
         count = min(self._denials.get(key, 0) + 1, COUNTER_CAP)
         self._denials[key] = count
         if not _backoff_due(count, DENIAL_THRESHOLD):

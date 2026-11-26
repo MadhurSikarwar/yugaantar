@@ -8,10 +8,15 @@ What it does
 
 Documents (names are fixed; see ``t4.store``)
     meta      {"generation", "epoch", "next_n"}
-    assets    {asset: {"owner", "body"}}
-    actors    {"disabled": [...], "revoked": {actor: epoch_when_revoked}}
-    requests  {request_id: {"decision", "rule", "seq", "n"}}
-    guard     counters owned by ``t4.guard``
+    assets    {asset: {"owner", "body"}}            (bounded by the 1 MiB ``setup`` input)
+    actors    {"disabled": [...],                   (bounded by the ``setup`` input)
+               "revoked": {identifier_key(actor): epoch_when_revoked}}
+    requests  {identifier_key(request_id): {"decision", "rule", "seq", "n"}}
+    guard     counters owned by ``t4.guard`` (keyed by ``identifier_key``)
+
+    Everything an unauthenticated caller can make grow is keyed by a fixed-size
+    hash, so each record is small and constant in size no matter how long the
+    identifier was.
 
 Design decisions that matter
     * The **epoch** only ever goes up, also across generations, so a decision
@@ -28,11 +33,24 @@ Design decisions that matter
 """
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 
 from t4.api import Txn
 
-MAX_INDEX_ENTRIES = 20_000
+MAX_INDEX_ENTRIES = 10_000
+
+
+def identifier_key(identifier: str) -> str:
+    """Fixed-size key (64 hex characters) for an opaque identifier of any length.
+
+    Identifiers may be up to 4 KiB of arbitrary characters, and JSON escaping can
+    multiply that by six. Storing them raw let one flood of long identifiers grow
+    the state file without bound (c2's security review, finding 1). Keys built
+    from this function make every stored record a small, constant size. The hash
+    is for compaction, not secrecy.
+    """
+    return hashlib.sha256(b"t4-id-v1:" + identifier.encode("utf-8")).hexdigest()
 
 
 @dataclass
@@ -85,7 +103,7 @@ class VaultState:
         return None if record is None else record["body"]
 
     def is_revoked(self, actor: str) -> bool:
-        return actor in self.revoked
+        return identifier_key(actor) in self.revoked
 
     def is_disabled(self, actor: str) -> bool:
         return actor in self.disabled
@@ -103,21 +121,23 @@ class VaultState:
 
     def revoke(self, actor: str) -> bool:
         """Revoke ``actor``. Returns True if this is a new revocation (epoch bumped)."""
-        if actor in self.revoked:
+        key = identifier_key(actor)
+        if key in self.revoked:
             return False
         self.epoch += 1
-        self.revoked[actor] = self.epoch
+        self.revoked[key] = self.epoch
         return True
 
     def first_record(self, request_id: str) -> dict | None:
-        record = self.requests.get(request_id)
+        record = self.requests.get(identifier_key(request_id))
         return None if record is None else dict(record)
 
     def remember_request(self, request_id: str, decision: str, rule: str, seq: int) -> bool:
         """Index a read. Returns False (and changes nothing) if the ID already exists."""
-        if request_id in self.requests:
+        key = identifier_key(request_id)
+        if key in self.requests:
             return False
-        self.requests[request_id] = {"decision": decision, "rule": rule, "seq": seq, "n": self.next_n}
+        self.requests[key] = {"decision": decision, "rule": rule, "seq": seq, "n": self.next_n}
         self.next_n += 1
         while len(self.requests) > MAX_INDEX_ENTRIES:
             oldest = min(self.requests, key=lambda key: self.requests[key]["n"])

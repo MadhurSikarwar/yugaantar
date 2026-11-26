@@ -52,13 +52,14 @@ import time
 from pathlib import Path
 from typing import Iterator
 
-from t4.api import IntegrityError, StoreBusyError
+from t4.api import IntegrityError, StoreBusyError, StoreFullError
 
 STATE_FILE = "state.json"
 KEY_FILE = "state.key"
 LOCK_FILE = "state.lock"
 FORMAT_VERSION = 1
-MAX_STATE_BYTES = 64 * 1024 * 1024
+MAX_STATE_BYTES = 64 * 1024 * 1024  # a larger file is refused when LOADING
+MAX_WRITE_BYTES = 48 * 1024 * 1024  # a larger state is refused when WRITING (headroom below the load limit)
 DEFAULT_LOCK_TIMEOUT = 5.0  # seconds; the validator allows 8 s per operation
 STALE_TEMP_SECONDS = 60
 
@@ -245,7 +246,12 @@ class _Txn:
             "docs": self._docs,
             "tag": _tag(self._key, new_version, self._docs),
         }
-        atomic_write_bytes(self._store.state_path, _canonical(body))
+        encoded = _canonical(body)
+        if len(encoded) > MAX_WRITE_BYTES:
+            # Never write a state we could not load back: that would brick the
+            # service (even `revoke` would fail). Keep the old, loadable state.
+            raise StoreFullError("state would exceed the size limit")
+        atomic_write_bytes(self._store.state_path, encoded)
         self.version = new_version
         self._dirty = False
 
@@ -332,24 +338,32 @@ class FileStore:
         return key, version, docs
 
     def _load_key(self, *, create: bool) -> bytes:
-        """Read the integrity key; create it only when no state file exists yet."""
+        """Read the integrity key.
+
+        ``create`` is True only when no state file exists. Then nothing depends on
+        the key, so a missing, empty or truncated key (a crash during the very
+        first ``setup``) is simply replaced. When a state file exists the key is
+        what authenticates it: a damaged or missing key fails closed and is never
+        regenerated.
+        """
         try:
             key = bytes.fromhex(self.key_path.read_text(encoding="ascii").strip())
+            problem = None if len(key) == 32 else "unreadable"
         except FileNotFoundError:
-            if not create:
-                raise IntegrityError("state key missing") from None
-            return self._create_key()
+            problem = "missing"
         except (OSError, ValueError):
-            raise IntegrityError("state key unreadable") from None
-        if len(key) != 32:
-            raise IntegrityError("state key unreadable")
-        return key
+            problem = "unreadable"
+        if problem is None:
+            return key
+        if not create:
+            raise IntegrityError(f"state key {problem}")
+        return self._create_key()
 
     def _create_key(self) -> bytes:
+        """Write a fresh key atomically, so a crash can never leave a partial key behind."""
         key = os.urandom(32)
-        fd = os.open(self.key_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        with os.fdopen(fd, "w", encoding="ascii") as handle:
-            handle.write(key.hex())
-            handle.flush()
-            os.fsync(handle.fileno())
+        try:
+            atomic_write_bytes(self.key_path, key.hex().encode("ascii"))
+        except OSError:
+            raise IntegrityError("state key could not be written") from None
         return key
