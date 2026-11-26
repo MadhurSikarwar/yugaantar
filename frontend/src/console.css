@@ -19,6 +19,7 @@
   border-right: 1px solid var(--line);
   background: #e8e8e8;
   z-index: 10;
+  overflow-y: auto;
 }
 .console-brand {
   font-size: 29px;
@@ -77,6 +78,7 @@
 }
 .console-workspace {
   margin-left: 228px;
+  min-width: 0;
 }
 .console-topbar {
   padding: 0 40px;
@@ -102,6 +104,9 @@
   gap: 30px;
   align-items: center;
   justify-content: space-between;
+}
+.console-title-row > div {
+  min-width: 0;
 }
 .console-eyebrow {
   text-transform: uppercase;
@@ -203,7 +208,7 @@
 }
 .workspace-totals {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   padding: 30px 0 35px;
   margin: 0;
 }
@@ -256,6 +261,10 @@
   position: relative;
   width: 100%;
   overflow-x: auto;
+}
+.table-scroll-hint,
+.network-scroll-hint {
+  display: none;
 }
 table {
   border-collapse: collapse;
@@ -351,7 +360,7 @@ td:last-child {
 .evidence-section {
   margin-top: 45px;
   display: grid;
-  grid-template-columns: 1fr 1.4fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
   gap: 60px;
 }
 .evidence-section h2 {
@@ -465,6 +474,10 @@ td:last-child {
   display: block;
   width: 100%;
   max-height: 300px;
+  min-width: 800px;
+}
+.network-canvas {
+  overflow-x: auto;
 }
 .network-figure p {
   padding: 16px;
@@ -489,6 +502,7 @@ td:last-child {
   color: #2f2f2f;
   padding: 32px;
   box-shadow: -30px 0 100px #0002;
+  overflow-y: auto;
 }
 .inspector::backdrop {
   background: #19191965;
@@ -499,6 +513,7 @@ td:last-child {
 }
 .inspector h2 {
   font-size: 23px;
+  overflow-wrap: anywhere;
 }
 .inspector-note {
   font-size: 12px;
@@ -583,6 +598,16 @@ td:last-child {
   }
 }
 @media (max-width: 800px) {
+  .table-scroll-hint {
+    display: block;
+    font-size: 12px;
+    line-height: 1.6;
+    padding-top: 12px;
+    color: var(--muted);
+  }
+  .network-scroll-hint {
+    display: inline;
+  }
   .console-sidebar {
     position: static;
     width: 100%;
@@ -649,7 +674,7 @@ td:last-child {
     font-size: 12px;
   }
   .workspace-totals {
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 27px;
   }
   .workspace-totals > div {
@@ -730,5 +755,20 @@ td:last-child {
   }
   .console-title-row h1 {
     font-size: 32px;
+  }
+  .console-topbar {
+    flex-wrap: wrap;
+    height: auto;
+    min-height: 55px;
+    gap: 12px;
+    padding-block: 16px;
+  }
+  .panel-heading {
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .source-strip {
+    flex-wrap: wrap;
+    gap: 12px;
   }
 }

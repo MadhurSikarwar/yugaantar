@@ -5,7 +5,7 @@ import "./styles.css";
 
 function Landing() {
   useEffect(() => {
-    document.title = "Interleaf — Access & evidence";
+    document.title = "Track 4 | Trust, but verify";
   }, []);
   return (
     <div className="landing">
@@ -13,8 +13,8 @@ function Landing() {
         Skip to project details
       </a>
       <header className="site-header">
-        <a className="wordmark" href="#/" aria-label="Interleaf home">
-          Interleaf<span className="wordmark-period">.</span>
+        <a className="wordmark" href="#/" aria-label="Track 4 home">
+          Track 4<span className="wordmark-period">.</span>
         </a>
         <nav aria-label="Main navigation">
           <a href="#project">The project</a>
@@ -26,21 +26,34 @@ function Landing() {
       <main>
         <section className="hero" aria-labelledby="hero-title">
           <div className="hero-overline">
-            <span>Protected-file access research</span>
+            <span>Yugaantar DevForge / Protected-file access</span>
             <span>Identity / Permission / Evidence</span>
           </div>
-          <h1 id="hero-title">
-            Access &<br />
-            <span>evidence.</span>
-          </h1>
-          <div className="hero-aside">
-            <span className="eyebrow">The focus</span>
-            <p>
-              Device identity.
-              <br />
-              Revocable access.
-              <br />A record of each decision.
-            </p>
+          <div className="hero-content">
+            <div className="hero-copy">
+              <h1 id="hero-title">
+                <span className="hero-track">Track - 4</span>
+                Trust, <span className="hero-title-muted">but verify.</span>
+              </h1>
+              <p className="hero-description">
+                A lost device should lose access, without interrupting anyone
+                else. Protect files, revoke access across nodes, and keep a
+                tamper-evident record of every decision.
+              </p>
+              <a className="text-link" href="#project">
+                Read the problem statement <span aria-hidden="true">↗</span>
+              </a>
+            </div>
+            <div className="hero-aside">
+              <span className="eyebrow">The focus</span>
+              <p>
+                Device identity.
+                <br />
+                Revocable access.
+                <br />
+                Verifiable decisions.
+              </p>
+            </div>
           </div>
           <div className="hero-bottom">
             <p>
@@ -48,8 +61,8 @@ function Landing() {
               <br />
               Signed requests. Auditable decisions.
             </p>
-            <a className="text-link" href="#project">
-              Explore the project
+            <a className="text-link" href="#/console">
+              Explore the console <span aria-hidden="true">↗</span>
             </a>
             <span className="hero-note">
               A protected-file service
@@ -63,7 +76,7 @@ function Landing() {
           id="project"
           aria-labelledby="project-title"
         >
-          <div className="section-label">The project</div>
+          <div className="section-label">The problem statement</div>
           <div className="project-copy">
             <h2 id="project-title">
               Who is asking.
@@ -74,13 +87,15 @@ function Landing() {
             </h2>
             <div className="project-explanation">
               <p>
-                A protected-file access project exploring device revocation and
-                cryptographic evidence. Permission decisions are separate from
-                signed device identity.
+                When a device is lost or a permission changes, access must stop
+                reliably—even across disconnected nodes—while other authorized
+                users continue working. Operators also need to understand why
+                each request was allowed or denied.
               </p>
               <p>
-                The operational workspace brings devices, node state and access
-                records into one place for inspection.
+                Track 4 explores post-quantum proofs, signed device requests and
+                tamper-evident audit logs. This workspace brings device records,
+                node state and reported evidence together for inspection.
               </p>
             </div>
           </div>
@@ -159,9 +174,9 @@ function Landing() {
       </main>
       <footer className="site-footer">
         <a href="#/" className="wordmark">
-          Interleaf.
+          Track 4.
         </a>
-        <p>Access & evidence</p>
+        <p>Track - 4 / Trust, but verify</p>
         <a href="#/console">Console</a>
         <a href="#project">About the project</a>
         <span>Protected-file access research</span>

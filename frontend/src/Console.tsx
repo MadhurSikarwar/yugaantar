@@ -138,7 +138,15 @@ function Inspector({
       }}
       aria-labelledby="inspector-title"
       onClick={(e) => {
-        if (e.target === e.currentTarget) dismiss();
+        if (e.target !== e.currentTarget) return;
+        const bounds = e.currentTarget.getBoundingClientRect();
+        if (
+          e.clientX < bounds.left ||
+          e.clientX > bounds.right ||
+          e.clientY < bounds.top ||
+          e.clientY > bounds.bottom
+        )
+          dismiss();
       }}
     >
       <div className="panel-heading">
@@ -200,7 +208,7 @@ export default function Console() {
     };
   }, []);
   useEffect(() => {
-    document.title = `${tab} — Interleaf console`;
+    document.title = `${tab} — Track 4 console`;
   }, [tab]);
   const category =
     tab === "Devices"
@@ -271,7 +279,12 @@ export default function Console() {
   function Records() {
     return (
       <>
-        <div className="table-wrap">
+        <div
+          className="table-wrap"
+          role="region"
+          aria-label={`${tab} records`}
+          tabIndex={0}
+        >
           <table>
             <caption className="sr-only">{tab} imported records</caption>
             <thead>
@@ -322,6 +335,11 @@ export default function Console() {
             </tbody>
           </table>
         </div>
+        {shown.length > 0 && (
+          <p className="table-scroll-hint">
+            Scroll horizontally to see all columns.
+          </p>
+        )}
         {!shown.length && (
           <Empty title={emptyTitle}>
             {snapshot
@@ -362,7 +380,7 @@ export default function Console() {
       </a>
       <aside className="console-sidebar">
         <a className="console-brand" href="#/">
-          Interleaf.
+          Track 4.
         </a>
         <span className="workspace-label">Security workspace</span>
         <nav aria-label="Console navigation">
@@ -603,7 +621,7 @@ export default function Console() {
                     onClick={() =>
                       downloadJSON(
                         filtered,
-                        `interleaf-${slugs[tabs.indexOf(tab)]}.json`,
+                        `track-4-${slugs[tabs.indexOf(tab)]}.json`,
                       )
                     }
                   >
@@ -628,60 +646,71 @@ export default function Console() {
                 </div>
                 {tab === "Nodes" && shown.length > 0 && (
                   <div className="network-figure">
-                    <svg
-                      viewBox="0 0 800 250"
-                      className="network-svg"
-                      role="img"
-                      aria-label="Imported nodes. Lines indicate shared device associations, not traffic or network health."
+                    <div
+                      className="network-canvas"
+                      role="region"
+                      aria-label="Node association diagram"
+                      tabIndex={0}
                     >
-                      {shown.slice(0, 12).map((n, i) => {
-                        const x = 70 + (i % 6) * 132,
-                          y = 65 + Math.floor(i / 6) * 120;
-                        return (
-                          <g key={i}>
-                            {shown.slice(i + 1, 12).map((other, j) => {
-                              if (
-                                !(n.deviceIds as string[]).some((id) =>
-                                  (other.deviceIds as string[]).includes(id),
+                      <svg
+                        viewBox="0 0 800 250"
+                        className="network-svg"
+                        role="img"
+                        aria-label="Imported nodes. Lines indicate shared device associations, not traffic or network health."
+                      >
+                        {shown.slice(0, 12).map((n, i) => {
+                          const x = 70 + (i % 6) * 132,
+                            y = 65 + Math.floor(i / 6) * 120;
+                          return (
+                            <g key={i}>
+                              <title>{String(n.id)}</title>
+                              {shown.slice(i + 1, 12).map((other, j) => {
+                                if (
+                                  !(n.deviceIds as string[]).some((id) =>
+                                    (other.deviceIds as string[]).includes(id),
+                                  )
                                 )
-                              )
-                                return null;
-                              const k = i + j + 1;
-                              return (
-                                <line
-                                  key={j}
-                                  x1={x}
-                                  y1={y}
-                                  x2={70 + (k % 6) * 132}
-                                  y2={65 + Math.floor(k / 6) * 120}
-                                  stroke="#b8bdb0"
-                                />
-                              );
-                            })}
-                            <rect
-                              x={x - 6}
-                              y={y - 6}
-                              width="12"
-                              height="12"
-                              fill={
-                                n.state === "current" ? "#495241" : "#d9ddd2"
-                              }
-                              stroke="#495241"
-                            />
-                            <text
-                              x={x}
-                              y={y + 27}
-                              textAnchor="middle"
-                              fontSize="11"
-                              fill="#495241"
-                            >
-                              {String(n.id).slice(0, 16)}
-                            </text>
-                          </g>
-                        );
-                      })}
-                    </svg>
+                                  return null;
+                                const k = i + j + 1;
+                                return (
+                                  <line
+                                    key={j}
+                                    x1={x}
+                                    y1={y}
+                                    x2={70 + (k % 6) * 132}
+                                    y2={65 + Math.floor(k / 6) * 120}
+                                    stroke="#b8bdb0"
+                                  />
+                                );
+                              })}
+                              <rect
+                                x={x - 6}
+                                y={y - 6}
+                                width="12"
+                                height="12"
+                                fill={
+                                  n.state === "current" ? "#495241" : "#d9ddd2"
+                                }
+                                stroke="#495241"
+                              />
+                              <text
+                                x={x}
+                                y={y + 27}
+                                textAnchor="middle"
+                                fontSize="11"
+                                fill="#495241"
+                              >
+                                {String(n.id).slice(0, 12)}
+                              </text>
+                            </g>
+                          );
+                        })}
+                      </svg>
+                    </div>
                     <p>
+                      <span className="network-scroll-hint">
+                        Scroll horizontally to explore the diagram.{" "}
+                      </span>
                       Shared device associations reported in the snapshot.{" "}
                       {shown.length > 12
                         ? "Diagram shows the first 12 records on this page. "
@@ -710,7 +739,7 @@ export default function Console() {
             </>
           )}
           <footer className="console-footer">
-            <span>Interleaf / Access & evidence</span>
+            <span>Track 4 / Access & evidence</span>
             <span>Local inspection · Changes are not sent to a service</span>
           </footer>
         </main>
