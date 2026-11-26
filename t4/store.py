@@ -220,6 +220,18 @@ def _fsync_dir(directory: Path) -> None:
         os.close(fd)
 
 
+def _replace_with_retry(source: Path, target: Path) -> None:
+    """``os.replace``; on Windows a scanner or reader may briefly hold the target open."""
+    for attempt in range(50):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if not _IS_WINDOWS or attempt == 49:
+                raise
+            time.sleep(0.01)
+
+
 def atomic_write_bytes(path: Path, data: bytes) -> None:
     """Write ``data`` so a crash leaves either the old or the new file."""
     tmp = path.with_name(f".{path.name}.{os.getpid()}.{os.urandom(4).hex()}.tmp")
@@ -229,7 +241,7 @@ def atomic_write_bytes(path: Path, data: bytes) -> None:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(tmp, path)
+        _replace_with_retry(tmp, path)
         _fsync_dir(path.parent)
     except BaseException:
         with contextlib.suppress(OSError):
