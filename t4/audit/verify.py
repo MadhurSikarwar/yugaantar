@@ -1,17 +1,25 @@
 """Independent check of an audit log directory (PRD M-C3, M-C5, goal 5).
 
-What it does: re-reads every entry, recomputes the hash chain, checks sequence
-numbers, verifies each signed checkpoint, and compares the log with a head and a
-public key that the operator saved elsewhere. It never changes any file except the
-lock file.
+What it does: re-reads every entry, recomputes the hash chain, checks sequence numbers, verifies
+each signed checkpoint, and compares the log with a head and a public key that the operator saved
+elsewhere. It never changes any file except the lock file.
 
-Attacks defended against: editing, inserting, deleting and reordering entries; cut
-tails (against a checkpoint or pinned head); forged or altered checkpoints; a
-replaced public key (against a pinned key). It reports the first bad entry.
+How it reads (memory and consistency): the log is streamed one entry at a time, so memory does not
+grow with the size of the log (only the small checkpoint list and the few hashes that checkpoints
+or a pin name are kept). The audit lock is held only long enough to take a snapshot: the checkpoint
+and key files are read and the log's size is recorded. The log is append-only, so reading up to
+that recorded size afterwards is a consistent view even while a service keeps appending; entries
+written after the snapshot are simply not part of this verification. Holding the lock for the
+whole pass instead would stall every request for as long as a large log takes to check.
 
-Not covered: without pinned values an attacker with write access to the directory
-can rebuild a consistent log. Changes confined to entries after the newest
-checkpoint or pin can be cut off unnoticed; the report says how many are uncovered.
+Attacks defended against: editing, inserting, deleting and reordering entries; cut tails (against
+a checkpoint or pinned head); forged or altered checkpoints; a replaced public key (against a
+pinned key). It reports the first bad entry.
+
+Not covered: without pinned values an attacker with write access to the directory can rebuild a
+consistent log. Changes confined to entries after the newest checkpoint or pin can be cut off
+unnoticed; the report says how many are uncovered. Verification is something an operator runs: it
+detects tampering when it is run, not at the moment it happens.
 """
 
 from __future__ import annotations
@@ -32,7 +40,6 @@ from t4.audit.log import (
     locked,
     parse_line,
     read_bytes,
-    split_records,
 )
 
 
@@ -71,54 +78,17 @@ def verify_log(
         if seq is not None:
             bad.append(seq)
 
-    log_data = checkpoint_data = stored_key = b""
+    stored_key = b""
+    checkpoint_size = log_size = 0
     if not folder.is_dir():
         fail("no audit log directory")
     else:
         try:
-            log_data, checkpoint_data, stored_key = _read_files(folder, warnings)
+            checkpoint_size, stored_key, log_size = _snapshot(folder, warnings)
         except OSError:
             fail("audit files could not be read")
         except AuditError:
             fail("audit log is busy: verification needs a consistent read, try again")
-
-    # ---- entry chain ---------------------------------------------------------
-    lines, partial = split_records(log_data)
-    hashes: list[str] = []  # hashes of the entries that passed, in order
-    previous = GENESIS_HASH
-    for number, line in enumerate(lines, start=1):
-        try:
-            entry = parse_line(line)
-        except AuditIntegrityError:
-            fail(f"entry {number}: malformed or edited record", number)
-            break
-        if entry["seq"] != number:
-            fail(f"entry {number}: sequence number is {entry['seq']} (deleted, inserted or reordered)", number)
-            break
-        if entry["hash"] != entry_hash(entry, previous):
-            fail(f"entry {number}: hash does not match its content and predecessor", number)
-            break
-        previous = entry["hash"]
-        hashes.append(previous)
-    if partial:
-        fail(f"entry {len(lines) + 1}: incomplete trailing record", len(lines) + 1)
-    chain_intact = len(hashes) == len(lines)
-
-    def compare(source: str, seq: int, head_hash: str) -> bool:
-        if seq == 0:
-            if head_hash != GENESIS_HASH:
-                fail(f"{source}: wrong starting hash", 1)
-                return False
-            return True
-        if seq > len(hashes):
-            if chain_intact:
-                fail(f"{source}: log ends at entry {len(hashes)} but entry {seq} was recorded (tail removed)",
-                     len(hashes) + 1)
-            return False
-        if hashes[seq - 1] != head_hash:
-            fail(f"{source}: entry {seq} differs from the recorded hash (history rewritten at or before it)", seq)
-            return False
-        return True
 
     # ---- public key ----------------------------------------------------------
     key = pinned_public_key if pinned_public_key is not None else stored_key
@@ -127,13 +97,17 @@ def verify_log(
     if pinned_public_key is None:
         warnings.append("public key not pinned: it was read from the log directory")
 
-    # ---- checkpoints ---------------------------------------------------------
-    checkpoint_lines, checkpoint_partial = split_records(checkpoint_data)
-    if checkpoint_partial:
-        warnings.append("incomplete trailing checkpoint ignored")
-    covered = 0
-    valid_checkpoints = 0
-    for number, line in enumerate(checkpoint_lines, start=1):
+    # ---- checkpoints and the pinned head: signatures first, hash comparison after the stream
+    # Streamed one record at a time: each signature is about 6.6 KB of hex, so this file can be as
+    # large as the log itself and must not be held in memory.
+    checkpoint_count = 0
+    to_compare: list[tuple[str, int, str, bool]] = []  # (source, seq, hash, is_checkpoint)
+    for line, complete in _read_lines(folder / CHECKPOINT_NAME, checkpoint_size):
+        if not complete:
+            warnings.append("incomplete trailing checkpoint ignored")
+            break
+        checkpoint_count += 1
+        number = checkpoint_count
         try:
             record = json.loads(line.decode("ascii"))
             seq, head_hash, ts = record["seq"], record["hash"], record["ts"]
@@ -147,11 +121,8 @@ def verify_log(
         if not _signature_ok(key, message, signature):
             fail(f"checkpoint {number}: signature is invalid")
             continue
-        if compare(f"checkpoint {number}", seq, head_hash):
-            valid_checkpoints += 1
-            covered = max(covered, seq)
+        to_compare.append((f"checkpoint {number}", seq, head_hash, True))
 
-    # ---- pinned head ---------------------------------------------------------
     if pinned_head is not None:
         try:
             seq, head_hash = pinned_head["seq"], pinned_head["hash"]
@@ -165,20 +136,99 @@ def verify_log(
         except (ValueError, KeyError, TypeError, AttributeError):
             fail("pinned head is malformed")
         else:
-            if compare("pinned head", seq, head_hash):
-                covered = max(covered, seq)
+            to_compare.append(("pinned head", seq, head_hash, False))
 
-    if not checkpoint_lines and pinned_head is None:
+    # ---- entry chain, streamed ----------------------------------------------
+    wanted = {seq for _, seq, _, _ in to_compare if seq > 0}
+    seen: dict[int, str] = {}  # hash of the entry at each wanted seq (only those are kept)
+    previous = GENESIS_HASH
+    good = 0  # entries that passed, contiguously from the start
+    chain_intact = True
+    complete_lines = 0
+    partial = False
+    consumed = 0
+    broke = False
+    if log_size:
+        try:
+            handle = (folder / LOG_NAME).open("rb")
+        except OSError:
+            fail("audit files could not be read")
+            handle = None
+        if handle is not None:
+            with handle:
+                while consumed < log_size:
+                    raw = handle.readline()
+                    if not raw:
+                        break
+                    consumed += len(raw)
+                    if consumed > log_size:  # written after the snapshot: not part of this check
+                        raw = raw[: len(raw) - (consumed - log_size)]
+                        consumed = log_size
+                    if not raw.endswith(b"\n"):
+                        partial = True
+                        break
+                    complete_lines += 1
+                    if broke:
+                        continue  # only counting the rest, for the incomplete-record position
+                    number = complete_lines
+                    try:
+                        entry = parse_line(raw[:-1])
+                    except AuditIntegrityError:
+                        fail(f"entry {number}: malformed or edited record", number)
+                        broke = True
+                        continue
+                    if entry["seq"] != number:
+                        fail(f"entry {number}: sequence number is {entry['seq']} (deleted, inserted or reordered)", number)
+                        broke = True
+                        continue
+                    if entry["hash"] != entry_hash(entry, previous):
+                        fail(f"entry {number}: hash does not match its content and predecessor", number)
+                        broke = True
+                        continue
+                    previous = entry["hash"]
+                    good = number
+                    if number in wanted:
+                        seen[number] = previous
+            if consumed < log_size and not partial:
+                warnings.append("the log became shorter while it was being verified")
+    if partial:
+        fail(f"entry {complete_lines + 1}: incomplete trailing record", complete_lines + 1)
+    chain_intact = not broke
+
+    def compare(source: str, seq: int, head_hash: str) -> bool:
+        if seq == 0:
+            if head_hash != GENESIS_HASH:
+                fail(f"{source}: wrong starting hash", 1)
+                return False
+            return True
+        if seq > good:
+            if chain_intact:
+                fail(f"{source}: log ends at entry {good} but entry {seq} was recorded (tail removed)", good + 1)
+            return False
+        if seen.get(seq) != head_hash:
+            fail(f"{source}: entry {seq} differs from the recorded hash (history rewritten at or before it)", seq)
+            return False
+        return True
+
+    covered = 0
+    valid_checkpoints = 0
+    for source, seq, head_hash, is_checkpoint in to_compare:
+        if compare(source, seq, head_hash):
+            covered = max(covered, seq)
+            if is_checkpoint:
+                valid_checkpoints += 1
+
+    if checkpoint_count == 0 and pinned_head is None:
         warnings.append("no signed checkpoint or pinned head: a removed tail cannot be detected")
-    elif len(hashes) > covered:
-        warnings.append(f"{len(hashes) - covered} newest entries are not covered by a checkpoint or pin")
+    elif good > covered:
+        warnings.append(f"{good - covered} newest entries are not covered by a checkpoint or pin")
 
     return VerifyReport(
         ok=not errors,
-        entries=len(hashes),
+        entries=good,
         checkpoints=valid_checkpoints,
         covered_seq=covered,
-        head_hash=hashes[-1] if hashes else GENESIS_HASH,
+        head_hash=previous,
         first_bad_seq=min(bad) if bad else None,
         errors=tuple(errors),
         warnings=tuple(warnings),
@@ -187,26 +237,60 @@ def verify_log(
     )
 
 
-def _read_files(folder: Path, warnings: list[str]) -> tuple[bytes, bytes, bytes]:
-    """Read log, checkpoints and public key, under the lock when it can be taken."""
+def _size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except FileNotFoundError:
+        return 0
 
-    def read() -> tuple[bytes, bytes, bytes]:
-        return (
-            read_bytes(folder / LOG_NAME),
-            read_bytes(folder / CHECKPOINT_NAME),
-            read_bytes(folder / PUBLIC_KEY_NAME),
-        )
+
+def _read_lines(path: Path, limit: int):
+    """Yield ``(line, complete)`` for the first ``limit`` bytes of ``path``, one line at a time.
+
+    ``complete`` is False only for an unterminated last line, after which nothing more is read.
+    A missing file yields nothing.
+    """
+    try:
+        handle = path.open("rb")
+    except FileNotFoundError:
+        return
+    consumed = 0
+    with handle:
+        while consumed < limit:
+            raw = handle.readline()
+            if not raw:
+                break
+            consumed += len(raw)
+            if consumed > limit:  # written after the snapshot: not part of this check
+                raw = raw[: len(raw) - (consumed - limit)]
+                consumed = limit
+            complete = raw.endswith(b"\n")
+            yield (raw[:-1] if complete else raw), complete
+            if not complete:
+                break
+
+
+def _snapshot(folder: Path, warnings: list[str]) -> tuple[int, bytes, int]:
+    """Take a consistent snapshot, under the lock when it can be taken.
+
+    Returns ``(checkpoint file size, public key, log size)``: the two sizes in bytes. Both files
+    are append-only, so reading exactly that many bytes later is a consistent view of them as they
+    were at this moment, even while a writer keeps appending.
+    """
+
+    def take() -> tuple[int, bytes, int]:
+        return (_size(folder / CHECKPOINT_NAME), read_bytes(folder / PUBLIC_KEY_NAME), _size(folder / LOG_NAME))
 
     try:
         with locked(folder):
-            return read()
+            return take()
     except OSError:
         # The lock file cannot be opened (for example a read-only copy): nothing is writing
         # to it either, so an unlocked read is consistent.
         warnings.append("checked without the audit lock")
-        return read()
+        return take()
     # A lock TIMEOUT (AuditError) is deliberately not caught here: a writer is active, and an
-    # unlocked read could be torn mid-append, so it must not be reported as a verdict.
+    # unlocked snapshot could be taken mid-append, so it must not be reported as a verdict.
 
 
 def _signature_ok(public_key: bytes, message: bytes, signature: bytes) -> bool:

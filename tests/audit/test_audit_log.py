@@ -205,6 +205,64 @@ def _tamper_request_id(folder, old: str, new: str) -> None:
     path.write_bytes(data)
 
 
+def _once(log, request_id="op-1", rule="KEY-ROTATE", **detail):
+    return log.append_once(actor="authority", action="rotate", target="phone", decision="allow",
+                           rule=rule, request_id=request_id, detail=detail)
+
+
+def test_append_once_logs_the_same_operation_a_single_time(folder, log):
+    first = _once(log, key_sha256="aa")
+    again = _once(log, key_sha256="aa")
+    assert again == first  # the existing entry is returned, nothing is appended
+    assert [e["request_id"] for e in log.entries()] == ["op-1"]
+
+
+def test_append_once_distinguishes_operations_and_rules(folder, log):
+    _once(log, "op-1")
+    _once(log, "op-2")                       # another operation: logged
+    _once(log, "op-1", rule="KEY-ENROLL")    # same id, different rule: logged
+    assert [(e["request_id"], e["rule"]) for e in log.entries()] == [
+        ("op-1", "KEY-ROTATE"), ("op-2", "KEY-ROTATE"), ("op-1", "KEY-ENROLL")]
+    assert log.verify().ok
+
+
+def test_append_once_is_not_fooled_by_the_id_appearing_elsewhere_in_an_entry(folder, log):
+    """Only the request_id field counts: the same text in another field does not suppress an entry."""
+    log.append(actor="op-1", action="x", target="op-1", decision="allow", rule="KEY-ROTATE",
+               request_id="other", detail={"note": "op-1"})
+    _once(log, "op-1")
+    assert [e["request_id"] for e in log.entries()] == ["other", "op-1"]
+
+
+def test_append_once_under_concurrency_writes_one_entry(folder, log):
+    import threading
+
+    errors = []
+
+    def worker():
+        try:
+            _once(AuditLog(folder, load_signer(folder), checkpoint_every=4))
+        except Exception as error:  # noqa: BLE001 - reported below
+            errors.append(error)
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert errors == []
+    assert [e["request_id"] for e in log.entries()] == ["op-1"]
+    assert log.verify().ok
+
+
+def test_append_once_never_rewrites_existing_history(folder, log):
+    for number in range(3):
+        add(log, f"r{number}")
+    before = log.entries()
+    _once(log)
+    assert log.entries()[:3] == before
+
+
 def test_append_catches_a_tamper_before_any_checkpoint_exists(folder, log):
     """A non-tail tamper is caught on the very next append even with zero checkpoints
     written yet (the window reaches genesis when the log is still this short)."""

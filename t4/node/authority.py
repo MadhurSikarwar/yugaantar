@@ -16,6 +16,7 @@ authenticate the operator.
 """
 from __future__ import annotations
 
+import hashlib
 import secrets
 from pathlib import Path
 from typing import Any
@@ -88,9 +89,23 @@ class Authority:
         record = self._record()
         return record["T"], record["s"]
 
-    def _event(self, action: str, target: str, rule: str, detail: dict) -> None:
-        self.log.append(actor="authority", action=action, target=target, decision="allow",
-                        rule=rule, request_id=secrets.token_hex(16), detail=detail)
+    def _event(self, action: str, target: str, rule: str, detail: dict, *,
+               identity: object = None) -> None:
+        """Log a key event. With ``identity`` the event is logged once per identity.
+
+        ``identity`` is data that stably names the operation (for example device, key version and
+        public key). The request id is derived from it, and a log that supports ``append_once``
+        writes it only if no entry with that id exists, so retrying an operation that was
+        interrupted after this entry but before its state was saved cannot log it twice. A log
+        without ``append_once`` (a test double) just appends.
+        """
+        once = identity is not None
+        request_id = (f"{action}-{hashlib.sha256(canonical(identity)).hexdigest()[:32]}"
+                      if once else secrets.token_hex(16))
+        write = getattr(self.log, "append_once", None) if once else None
+        write = write if callable(write) else self.log.append
+        write(actor="authority", action=action, target=target, decision="allow",
+              rule=rule, request_id=request_id, detail=detail)
 
     def _revoke_in_vault(self, record: dict, set_name: str, item: str, at: float) -> None:
         if record["vault"]:
@@ -117,7 +132,8 @@ class Authority:
             record["devices"][device_id] = {"owner": owner, "keys": [
                 {"version": 1, "public_key": public_key, "activate_at": 0}]}
             # Log first: if the log fails, nothing is enrolled.
-            self._event("enroll", device_id, "KEY-ENROLL", {"owner": owner, "version": 1})
+            self._event("enroll", device_id, "KEY-ENROLL", {"owner": owner, "version": 1},
+                        identity=[device_id, owner, public_key])
             txn.put(RECORD, record)
 
     def publish_rotation(self, device_id: str, version: int, public_key: str,
@@ -156,7 +172,9 @@ class Authority:
                                    "activate_at": activate_at})
             self._event("rotate", device_id, "KEY-ROTATE",
                         {"owner": device["owner"], "version": version,
-                         "activate_at": repr(activate_at)})
+                         "activate_at": repr(activate_at),
+                         "key_sha256": hashlib.sha256(b64d(public_key)).hexdigest()},
+                        identity=[device_id, version, public_key])
             txn.put(RECORD, record)
         return activate_at
 
