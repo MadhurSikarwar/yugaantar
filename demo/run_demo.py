@@ -295,6 +295,36 @@ def part_operator(root: Path, world: dict) -> None:
     check(not report.ok, f"after: verify-log FAILS at entry {report.first_bad_seq}: {report.errors[0]}")
 
 
+def part_messaging() -> None:
+    """Optional demo-layer messaging (needs the demo-only 'cryptography' package; never used by the adapter)."""
+    section("Part 4 (optional): signed, encrypted messages, demo layer only")
+    sys.path.insert(0, str(ROOT))
+    try:
+        from demo import messaging as m
+        m._aead()
+    except Exception:
+        say("  skipped: install requirements-demo.txt to run this part (the adapter does not need it)")
+        return
+    from t4.crypto import kem, sig
+
+    maya_pk, maya_sk = sig.sig_keygen()
+    ravi_kem_pk, ravi_kem_sk = kem.keygen()
+    guard = m.ReplayGuard()
+    wire = json.dumps(m.seal(sender="maya", sender_sig_secret=maya_sk, recipient="ravi",
+                             recipient_kem_public=ravi_kem_pk, plaintext="meet at noon", seq=1))
+    check("meet at noon" not in wire, "the message on the wire does not contain the text")
+    read = m.open_message(json.loads(wire), recipient="ravi", recipient_kem_secret=ravi_kem_sk,
+                          expected_sender="maya", sender_sig_public=maya_pk, guard=guard)
+    check(read == "meet at noon", "ravi reads it after checking maya's signature")
+    try:
+        m.open_message(json.loads(wire), recipient="ravi", recipient_kem_secret=ravi_kem_sk,
+                       expected_sender="maya", sender_sig_public=maya_pk, guard=guard)
+        check(False, "a replayed message is refused")
+    except m.MessagingError:
+        check(True, "a replayed message is refused")
+    say("  (not forward secret; replay counters are in memory; see demo/messaging.py)")
+
+
 def main(argv: list[str] | None = None) -> int:
     global PAUSE
     parser = argparse.ArgumentParser(description="Run the 5-minute demo.")
@@ -309,6 +339,7 @@ def main(argv: list[str] | None = None) -> int:
         part_adapter(root)
         world = part_nodes(root)
         part_operator(root, world)
+        part_messaging()
     finally:
         if args.keep:
             say(f"\n(kept: {root})")

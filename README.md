@@ -24,7 +24,7 @@ Yugaantar DevForge, Track 4. A protected-file service for the lost-device case:
 
 ## Setup on a clean machine
 
-Requirements: **Python 3.12** and Git. The runtime dependencies are `pqcrypto==0.4.0`, plus `cffi` and `pycparser`, which it pulls in (`requirements.txt`). Development needs only `pytest` (`requirements-dev.txt`). The runtime uses nothing else outside the standard library and makes no network calls. **Optional, demo only:** `demo/messaging.py` needs the vetted `cryptography` package (`requirements-demo.txt`). The judged adapter and `t4/` never import it.
+Requirements: **Python 3.12** and Git. The runtime dependencies are `pqcrypto==0.4.0`, plus `cffi` and `pycparser`, which it pulls in (`requirements.txt`). Development needs only `pytest` (`requirements-dev.txt`). The runtime uses nothing else outside the standard library and makes no network calls. **Optional, demo only:** `demo/messaging.py` needs the vetted `cryptography` package, pinned to 50.0.2 in `requirements-demo.txt`. The judged adapter and `t4/` never import it.
 
 ```sh
 git clone https://github.com/MadhurSikarwar/yugaantar.git
@@ -81,9 +81,9 @@ The full list is in `docs/threat-model.md`.
 - No caller authentication in the adapter.
 - A full rollback of a state directory can't be detected locally.
 - Anyone with write access to a directory can read its signing key.
-- No transport encryption or forward secrecy (goals 9 to 12 are not supported).
+- No transport encryption or forward secrecy in the adapter (goals 10 to 12 are not supported). Goal 9 (replay and recipient checks for messages) exists only in the optional demo layer, `demo/messaging.py`.
 - The detector is measured only on synthetic data.
-- The running service catches log tampering only in recent entries (and then fails closed). Older edits are caught by `verify-log`. `audit`'s `rule` field reveals denial reasons to any caller (accepted, `coord/DECISIONS.md` D-004).
+- The running service fully re-checks logs up to 256 KiB on each write (and fails closed). Older parts of larger logs are checked by `verify-log`. `audit`'s `rule` field reveals denial reasons to any caller (accepted, `coord/DECISIONS.md` D-004).
 - Some review findings are still open (listed in the threat model).
 
 ## Attribution

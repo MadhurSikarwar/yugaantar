@@ -1,0 +1,2 @@
+# Development and test tools only. NOT needed at runtime (runtime pins live in requirements.txt, owned by c4).
+pytest>=8
