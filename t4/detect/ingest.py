@@ -13,9 +13,11 @@ What it defends against
       unparsable timestamps and non-integer offsets raise ``ValueError`` with
       the row number. The detector refuses to classify a file it cannot read
       exactly, instead of silently skipping rows an attacker could hide in.
-    * Duplicate ``event_id`` values raise ``ValueError``: event IDs identify
-      records, and two records with one ID would make every explanation
-      ambiguous.
+    * Two different records with one ``event_id`` raise ``ValueError``: event
+      IDs identify records, and this would make every explanation ambiguous.
+      A re-delivery (every field identical except the collector's receipt time)
+      is ignored, keeping the first, so one duplicate cannot stop detection.
+      Pass ``redelivered`` to learn which IDs were ignored.
     * All values stay plain strings. Nothing is evaluated, and no field is used
       as a file path.
 """
@@ -164,7 +166,11 @@ def _event_from_row(row: Mapping[str, str], index: int, line: int) -> Event:
     )
 
 
-def parse_events(text: str) -> list[Event]:
+def _same_record(first: Event, again: Event) -> bool:
+    return all(getattr(first, name) == getattr(again, name) for name in COLUMNS if name != "received_time_utc")
+
+
+def parse_events(text: str, *, redelivered: list[str] | None = None) -> list[Event]:
     """Parse events CSV text. Row order is receipt order."""
     reader = csv.reader(io.StringIO(text, newline=""), strict=True)
     try:
@@ -176,7 +182,7 @@ def parse_events(text: str) -> list[Event]:
     if tuple(h.strip() for h in header) != COLUMNS:
         raise ValueError("events: header does not match the expected columns")
     events: list[Event] = []
-    seen: set[str] = set()
+    seen: dict[str, Event] = {}
     try:
         for cells in reader:
             line = reader.line_num
@@ -185,9 +191,14 @@ def parse_events(text: str) -> list[Event]:
             if len(cells) != len(COLUMNS):
                 raise ValueError(f"row {line}: expected {len(COLUMNS)} columns, got {len(cells)}")
             event = _event_from_row(dict(zip(COLUMNS, cells)), len(events), line)
-            if event.event_id in seen:
-                raise ValueError(f"row {line}: duplicate event_id")
-            seen.add(event.event_id)
+            first = seen.get(event.event_id)
+            if first is not None:
+                if not _same_record(first, event):
+                    raise ValueError(f"row {line}: duplicate event_id with different content")
+                if redelivered is not None:
+                    redelivered.append(event.event_id)
+                continue
+            seen[event.event_id] = event
             events.append(event)
     except csv.Error:
         raise ValueError(f"events: malformed CSV near row {reader.line_num}") from None
@@ -201,9 +212,9 @@ def _read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8-sig")
 
 
-def load_events(path: Path) -> list[Event]:
+def load_events(path: Path, *, redelivered: list[str] | None = None) -> list[Event]:
     """Load ``events.csv`` from disk."""
-    return parse_events(_read_text(path))
+    return parse_events(_read_text(path), redelivered=redelivered)
 
 
 def _opt_time(raw: Mapping, key: str, approval_id: str) -> datetime | None:

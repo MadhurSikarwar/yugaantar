@@ -221,3 +221,34 @@ def test_a_reused_device_id_does_not_inherit_a_lost_devices_keys(tmp_path):
     node = world.node()
     assert world.ask(node, first, 1300.0) == "deny"
     assert world.ask(node, second, 1301.0) == "allow"
+
+
+@pytest.mark.parametrize("what", ["device", "actor"])
+def test_a_revocation_interrupted_and_retried_is_logged_once(tmp_path, what):
+    """The log must not claim a revocation that is not saved, nor record it twice."""
+    world = World(tmp_path)
+
+    class Crash(BaseException):
+        pass
+
+    class CrashAfterWrite:
+        def __init__(self, log):
+            self.log = log
+
+        def append_once(self, **entry):
+            self.log.append_once(**entry)
+            raise Crash
+
+    def revoke(now):
+        return (world.authority.revoke_device("d1", now) if what == "device"
+                else world.authority.revoke_actor("maya", now))
+
+    real = world.authority.log
+    world.authority.log = CrashAfterWrite(real)
+    with pytest.raises(Crash):
+        revoke(1002.0)
+    world.authority.log = real
+    assert world.ask(world.node(), world.device, 1003.0) == "deny"  # saved before it was logged
+    revoke(1010.0)
+    logged = [e for e in real.entries() if e["rule"].startswith("KEY-REVOKE")]
+    assert len(logged) == 1

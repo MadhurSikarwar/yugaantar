@@ -208,6 +208,22 @@ def revocation_for_denial(event: Event, approvals: Approvals, cfg: DetectConfig)
     """A revocation that explains this denial: effective before it, covering its target."""
     if event.outcome not in cfg.deny_outcomes:
         return None
+    return covering_revocation(event, approvals, cfg)
+
+
+def expired_grant(event: Event, approvals: Approvals, cfg: DetectConfig) -> Approval | None:
+    """An authorized grant that covered this target but had ended before the event."""
+    for approval in approvals.values():
+        if (approval.operation == "grant_role" and approval.subject == event.actor
+                and approval.role == event.role_before and approval.approved_by in cfg.authorized_approvers
+                and approval.valid_until is not None and approval.valid_until <= event.corrected_time
+                and event.target_service in approval.scope):
+            return approval
+    return None
+
+
+def covering_revocation(event: Event, approvals: Approvals, cfg: DetectConfig) -> Approval | None:
+    """An authorized revocation effective before the event and covering its target."""
     moment = event.corrected_time
     for approval in approvals.values():
         if (

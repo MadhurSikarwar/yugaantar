@@ -80,6 +80,12 @@ class Dependencies:
     audit_factory: Callable[[], AuditSink]
     kem_factory: Callable[[], KemProvider]
     proof_factory: Callable[[], ProofProvider]
+    # Told about a failure of the audit log itself (see t4.integrity_alert). Never raises.
+    on_audit_failure: Callable[[Exception], None] = lambda error: None
+
+
+class AuditHistoryLost(IntegrityError):
+    """The audit log ends before an entry that the saved state knows was written."""
 
 
 class VaultService:
@@ -93,6 +99,19 @@ class VaultService:
         if self._audit_cache is None:
             self._audit_cache = self._deps.audit_factory()
         return self._audit_cache
+
+    def _require_history(self, state: VaultState) -> None:
+        """Refuse to read from or add to a log that has lost entries.
+
+        Every number saved in ``state.audit_seq`` was returned by an append that had already
+        reached the disk, so an honest log can never be behind it. Checked BEFORE appending:
+        appending to a shortened log would let it grow back past the saved number.
+        """
+        last_seq = getattr(self._audit(), "last_seq", None)
+        if state.audit_seq and callable(last_seq) and last_seq() < state.audit_seq:
+            error = AuditHistoryLost("the audit log has lost entries the state recorded")
+            self._deps.on_audit_failure(error)
+            raise error
 
     @staticmethod
     def _internal_id() -> str:
@@ -156,7 +175,11 @@ class VaultService:
                 # TRACK4_SETUP_POLICY=once: the operator then resets by removing the state folder.
                 raise InputError("setup is locked: this state is already initialized")
             state.initialize(request.owners, request.contents, request.disabled)
-            self._audit().append(
+            try:
+                self._require_history(state)
+            except AuditHistoryLost:
+                self._note("Earlier audit history is missing; an alert was recorded.")
+            entry = self._audit().append(
                 actor=UNATTRIBUTED,
                 action="setup",
                 target="vault",
@@ -170,6 +193,7 @@ class VaultService:
                     "disabled": len(state.disabled),
                 },
             )
+            state.audit_seq = int(entry["seq"])  # starts again from the log as it is now
             state.save(txn)
         return {"ready": True}
 
@@ -180,6 +204,7 @@ class VaultService:
             state = VaultState.load(txn)
             decision = decide(state, request.actor, request.asset, request.request_id)
             label = "allow" if decision.allow else "deny"
+            self._require_history(state)
             entry = self._audit().append(
                 actor=request.actor,
                 action="read",
@@ -189,6 +214,7 @@ class VaultService:
                 request_id=request.request_id,
                 detail=self._decision_detail(state, decision),
             )
+            state.audit_seq = int(entry["seq"])
             alerts = self._update_after_decision(
                 state,
                 decision=decision,
@@ -215,6 +241,7 @@ class VaultService:
             state.save(txn)
             txn.commit()  # durable BEFORE logging (M-A11)
             try:
+                self._require_history(state)
                 self._audit().append(
                     actor=request.actor,
                     action="revoke",
@@ -228,7 +255,9 @@ class VaultService:
                         "newly_revoked": newly_revoked,
                     },
                 )
-            except Exception:  # noqa: BLE001 - the revocation already happened
+            except Exception as error:  # noqa: BLE001 - the revocation already happened
+                if not isinstance(error, AuditHistoryLost):  # already reported
+                    self._deps.on_audit_failure(error)
                 self._note("The revocation was saved but its audit entry could not be written.")
         return {}
 
@@ -250,6 +279,7 @@ class VaultService:
             state = VaultState.load(txn)
             decision = decide(state, request.actor, request.asset, request_id)
             detail = {**self._decision_detail(state, decision), "challenge_sha256": challenge_sha256}
+            self._require_history(state)
 
             if not decision.allow:
                 entry = self._audit().append(
@@ -261,6 +291,7 @@ class VaultService:
                     request_id=request_id,
                     detail=detail,
                 )
+                state.audit_seq = int(entry["seq"])
                 alerts = self._update_after_decision(
                     state,
                     decision=decision,
@@ -358,6 +389,7 @@ class VaultService:
                 return
             with store.locked() as txn:
                 state = VaultState.load(txn)
+                self._require_history(state)
                 guard = Guard(state.guard)
                 alerts = guard.on_invalid_input(kind)
                 state.guard = guard.to_doc()

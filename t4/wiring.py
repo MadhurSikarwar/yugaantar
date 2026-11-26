@@ -55,8 +55,24 @@ def build_default_dependencies(state_dir: Path | None = None) -> Dependencies:
         try:
             signer = module.load_or_create_signer(audit_dir)
             return module.AuditLog(audit_dir, signer)
-        except Exception:  # noqa: BLE001 - never leak details of a damaged log or key
+        except Exception as error:  # noqa: BLE001 - never leak details of a damaged log or key
+            on_audit_failure(error)
             raise DependencyError("audit log unavailable") from None
+
+    def on_audit_failure(error: Exception) -> None:
+        # Only damage is reported: a busy lock or a full disk is not evidence of tampering.
+        try:
+            from t4.audit.log import AuditIntegrityError
+            from t4.service import AuditHistoryLost
+
+            if not isinstance(error, (AuditIntegrityError, AuditHistoryLost)):
+                return
+            from t4.integrity_alert import record_audit_failure
+
+            effective = prepare_state_dir(store.directory)
+            record_audit_failure(effective, effective / AUDIT_SUBDIR, str(error))
+        except Exception:  # noqa: BLE001
+            return
 
     def kem_factory() -> KemProvider:
         return _import("t4.crypto.kem")  # the module itself provides ``encapsulate``
@@ -69,6 +85,7 @@ def build_default_dependencies(state_dir: Path | None = None) -> Dependencies:
         audit_factory=audit_factory,
         kem_factory=kem_factory,
         proof_factory=proof_factory,
+        on_audit_failure=on_audit_failure,
     )
 
 

@@ -207,14 +207,20 @@ class Authority:
             at = record[set_name].get(item, max(now, record["last_issued_at"]))
             record[set_name][item] = at
             txn.put(RECORD, record)
+            # Vault before the save: an extra removal there is safe, a missing one is not.
             # A revocation persists even if the vault or the log fails.
-            for step in (lambda: self._revoke_in_vault(record, set_name, item, at),
-                         lambda: self._event(action, item, rule, {"effective_at": repr(at)},
-                                             identity=[action, item, repr(at)])):
-                try:
-                    step()
-                except Exception as error:
-                    failure = error
+            try:
+                self._revoke_in_vault(record, set_name, item, at)
+            except Exception as error:
+                failure = error
+        # Logged only after the revocation is saved. So the log never reports a revocation that
+        # is not in force, and a retry after a crash finds the same time and logs it once.
+        with self.store.locked():
+            try:
+                self._event(action, item, rule, {"effective_at": repr(at)},
+                            identity=[action, item, repr(at)])
+            except Exception as error:
+                failure = error
         if failure is not None:
             raise NodeError("revoked, but recording it in the vault or log failed") from failure
         return at

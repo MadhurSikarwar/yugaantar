@@ -6,7 +6,7 @@ Yugaantar DevForge, Track 4. A protected-file service for the lost-device case:
 - a second owner still reads their own file
 - an operator can see in a tamper-evident log which rule decided each request
 
-**USP:** every allow, deny and alert is logged with the rule and events behind it. Anyone holding a pinned checkpoint and the public key can verify that the log up to that point has not been altered. Full tamper detection needs an operator to run `verify-log` against a pin kept outside the directory. The running service re-checks only the recent part of the log on each request.
+**USP:** every allow, deny and alert is logged with the rule and events behind it. Anyone holding a pinned checkpoint and the public key can verify that the log up to that point has not been altered. Full tamper detection needs an operator to run `verify-log` against a pin kept outside the directory. The running service re-checks logs up to 256 KiB in full on each write, and a bounded part of larger ones.
 
 - **Post-quantum parts:** ML-KEM-768 for the `protected_read` proof. ML-DSA-65 for audit checkpoints, device requests and revocation lists.
 - **What it does not do:** it doesn't encrypt files in transit, and the judged adapter doesn't authenticate callers (it trusts the `actor` string and enforces permissions). Device identity is verified in the node layer. See `docs/threat-model.md`.
@@ -62,6 +62,9 @@ Each line is a command, and each result has been reproduced (see `docs/evidence-
 | Attacks from PRD section 8 fail | `python tools/selfattack.py --entry track4_service.py --report <out.md>` |
 | Log tampering is detected | `python -m t4.audit.cli --dir <log dir> head --out <pin.json>`, then `verify-log --pin <pin.json>` |
 | Why a request was denied | `python -m t4.audit.cli --dir <log dir> explain <request_id>` |
+| A damaged or shortened audit log is refused and recorded | `python -m pytest tests/integration/test_audit_history_and_alerts.py -q`; on a live state: `python -m t4.audit.cli --dir <state dir>/alerts alerts` |
+| An authority restore cannot revive a replaced key or a revoked device | `python -m pytest tests/recovery/test_restore_security.py -q` |
+| Detector with another environment's service rules | `python -m t4.detect.cli detect --dir <dir> --policy <policy.json>` (format: `t4/detect/policy_file.py`) |
 | Full audit verification, with a pin kept outside the directory | `python -m t4.audit.cli --dir <log dir> pin init --pin <pin.json>`, later `verify-log --pin <pin.json>`, then `pin advance --pin <pin.json>` (exit 1 on any failure) |
 | State is not older than the audit log (a state file rolled back on its own) | `python -m t4.consistency --state-dir <dir>` (exit 1 if inconsistent) |
 | Storage use and free space | `python -m t4.storage_status --state-dir <dir>` (exit 1 or 2 on low space or large files) |

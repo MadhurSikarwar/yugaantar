@@ -16,8 +16,9 @@ What it does
        unexpected service edges chained by actor and session across at least
        N services within W -> ``lateral_movement_candidate`` (alert
        ``DET-LATERAL-MOVEMENT``); any other denial -> ``isolated_denial``;
-       a lone allowed unexpected edge -> ``routine`` plus a low-severity
-       ``DET-UNEXPECTED-EDGE`` alert;
+       a lone allowed unexpected edge -> ``routine`` plus a
+       ``DET-UNEXPECTED-EDGE`` alert: high if the access had been revoked,
+       medium if its approval had ended, otherwise low;
     5. everything else -> ``routine_delayed_delivery`` (delay above the
        threshold), ``routine_clock_offset`` (non-zero known offset) or
        ``routine``.
@@ -255,14 +256,29 @@ def analyze(events: Iterable[Event], approvals: Mapping[str, Approval],
                 f"single denied edge {event.source_service}->{event.target_service}; one denial alone "
                 "is not a movement sequence")
         else:
-            put(event, "routine", "DET-UNEXPECTED-EDGE",
+            rule = "DET-UNEXPECTED-EDGE"
+            allowed = event.outcome in cfg.allow_outcomes
+            revoked = rules.covering_revocation(event, approvals, cfg) if allowed else None
+            expired = rules.expired_grant(event, approvals, cfg) if allowed and revoked is None else None
+            if revoked is not None:
+                severity = "high"
+                why = (f"after {revoked.approval_id} revoked {revoked.role} at "
+                       f"{iso_z(revoked.effective_at)}. The access should have been refused.")
+            elif expired is not None:
+                severity = "medium"
+                why = (f"after {expired.approval_id} ended at {iso_z(expired.valid_until)}. "
+                       "The access is no longer approved.")
+            else:
+                severity = "low"
+                why = (f"outside the expected scope of role {event.role_before}. "
+                       "Single edge: not a movement sequence.")
+            # The label is unchanged (the nine practice labels have none for these cases).
+            put(event, "routine", rule,
                 f"{event.outcome} edge {event.source_service}->{event.target_service} is outside the "
                 f"expected scope of {event.role_before}")
             alerts.append(_alert(
-                "DET-UNEXPECTED-EDGE", "low", event, [event],
-                f"{event.actor} reached {event.target_service} ({event.outcome}) outside the expected "
-                f"scope of role {event.role_before}. Single edge: not a movement sequence.",
-                cfg))
+                rule, severity, event, [event],
+                f"{event.actor} reached {event.target_service} ({event.outcome}) {why}", cfg))
 
     # Step 5: everything left is routine; explain delivery and clock effects.
     uncertain = rules.order_uncertain_ids(events, cfg)
