@@ -190,6 +190,9 @@ def main(argv: list[str] | None = None) -> int:
                 found, rotations = check_after_kill(root, signer)
                 states[found] += 1
                 repeated_log += rotations > 1
+                # One logical rotation must leave exactly one KEY-ROTATE entry once it has been
+                # finished (check_after_kill finishes it). More than one is a real failure.
+                require(rotations == 1, f"{rotations} KEY-ROTATE entries for one rotation")
             except Exception as error:
                 failures.append(f"random trial {trial}: {type(error).__name__}: {error}")
 

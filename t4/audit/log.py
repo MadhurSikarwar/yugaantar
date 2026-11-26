@@ -395,6 +395,49 @@ class AuditLog:
         Raises ``ValueError`` for wrong argument types and ``AuditError`` if the log
         cannot be extended safely.
         """
+        fields, extra = self._checked_entry(
+            actor, action, target, decision, rule, request_id, detail)
+        try:
+            with locked(self.directory):
+                seq, head_hash = self._recover_and_head()
+                return self._write_entry(seq, head_hash, fields, extra)
+        except OSError:
+            raise AuditError("audit log could not be written") from None
+
+    def append_once(
+        self,
+        *,
+        actor: str,
+        action: str,
+        target: str,
+        decision: str,
+        rule: str,
+        request_id: str,
+        detail: Mapping[str, str | int | bool] | None = None,
+    ) -> dict:
+        """Append unless an entry with this ``request_id`` and ``rule`` is already in the log.
+
+        Returns ``{"seq", "hash"}`` of the new entry, or of the existing one. The search and the
+        append happen under ONE hold of the audit lock, so two writers cannot both decide the
+        entry is missing. This is what lets a retried operation (for example a key rotation
+        interrupted after its audit entry was written but before its state was saved) log its
+        event exactly once: the caller passes a request_id derived from the operation's stable
+        identity instead of a random one. Existing history is never changed.
+        """
+        fields, extra = self._checked_entry(
+            actor, action, target, decision, rule, request_id, detail)
+        try:
+            with locked(self.directory):
+                seq, head_hash = self._recover_and_head()
+                existing = self._find_once(request_id, rule)
+                if existing is not None:
+                    return existing
+                return self._write_entry(seq, head_hash, fields, extra)
+        except OSError:
+            raise AuditError("audit log could not be written") from None
+
+    @staticmethod
+    def _checked_entry(actor, action, target, decision, rule, request_id, detail):
         fields = {
             "actor": actor,
             "action": action,
@@ -409,12 +452,23 @@ class AuditLog:
         for key, value in extra.items():
             if not isinstance(key, str) or not isinstance(value, (str, int, bool)):
                 raise ValueError("audit detail must map strings to str, int or bool")
+        return fields, extra
+
+    def _find_once(self, request_id: str, rule: str) -> dict | None:
+        """Stream the log for an entry with this request_id and rule (lock must be held)."""
+        needle = b'"request_id":' + canonical(request_id)
         try:
-            with locked(self.directory):
-                seq, head_hash = self._recover_and_head()
-                return self._write_entry(seq, head_hash, fields, extra)
-        except OSError:
-            raise AuditError("audit log could not be written") from None
+            handle = self.log_path.open("rb")
+        except FileNotFoundError:
+            return None
+        with handle:
+            for raw in handle:
+                if not raw.endswith(b"\n") or needle not in raw:
+                    continue  # an unterminated tail was repaired before this point
+                entry = parse_line(raw[:-1])
+                if entry["request_id"] == request_id and entry["rule"] == rule:
+                    return {"seq": entry["seq"], "hash": entry["hash"]}
+        return None
 
     def alert(
         self,
