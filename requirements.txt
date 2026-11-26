@@ -1,0 +1,6 @@
+# Runtime dependencies (Python 3.12). Everything else is the standard library.
+pqcrypto==0.4.0
+# Pulled in by pqcrypto 0.4.0 on a clean install (pinned to the versions we tested):
+cffi==2.1.1
+pycparser==3.12
+# Development and test tools are listed separately in requirements-dev.txt (pytest).
