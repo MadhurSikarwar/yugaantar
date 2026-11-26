@@ -67,6 +67,11 @@ class DetectConfig:
         )
     )
 
+    # Per-identity baseline: services an actor is known to use, on top of its
+    # role scope. Empty for the practice set; filled by ``export`` from the
+    # node provisioning (asset owners) of our own system.
+    baseline: Mapping[str, frozenset[str]] = field(default_factory=lambda: _frozen({}))
+
     # Session bookkeeping against the identity service is always expected.
     identity_service: str = "identity"
     session_actions: frozenset[str] = frozenset({"sign_in", "sign_out"})
@@ -85,6 +90,9 @@ class DetectConfig:
     # How many allowed actions after an unapproved role change are labelled
     # review_after_role_change (PRD M-C6: "the next privileged read").
     review_followups: int = 1
+    # Whether the follow-up must share the role change's session. Our own key
+    # events (grants) carry no device session, so ``export`` turns this off.
+    review_same_session: bool = True
 
     # M-C8 clock and order.
     delayed_delivery_ms: float = 1000.0
@@ -102,8 +110,12 @@ class DetectConfig:
             return False
         rank_after = self.role_rank.get(after)
         rank_before = self.role_rank.get(before)
-        if rank_after is None or rank_before is None:
+        if rank_after is None:
             return True
+        if rank_before is None:
+            # From an unlisted role to a listed one: only the lowest listed
+            # rank counts as a decrease.
+            return rank_after > min(self.role_rank.values())
         return rank_after > rank_before
 
 

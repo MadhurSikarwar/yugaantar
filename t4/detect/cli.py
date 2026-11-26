@@ -140,6 +140,63 @@ def cmd_timeline(args: argparse.Namespace) -> int:
     return 0
 
 
+def _named(values: list[str] | None, what: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for value in values or []:
+        name, sep, path = value.partition("=")
+        if not sep or not name or not path:
+            raise ValueError(f"{what} must look like NAME=PATH")
+        out[name] = path
+    return out
+
+
+def cmd_export(args: argparse.Namespace) -> int:
+    from . import export as exp
+    from .ingest import load_approvals as _load_approvals
+
+    pins = _named(args.pin, "--pin")
+    sources = []
+    named_logs = [(name, path, "node") for name, path in _named(args.node, "--node").items()]
+    if args.authority:
+        named_logs.append(("authority", args.authority, "authority"))
+    if not named_logs:
+        raise ValueError("give at least one --node NAME=DIR or --authority DIR")
+    for name, path, kind in named_logs:
+        pin = json.loads(Path(pins[name]).read_text(encoding="utf-8")) if name in pins else None
+        key = bytes.fromhex(pin["public_key"]) if pin and pin.get("public_key") else None
+        sources.append(exp.LogSource(Path(path), kind, name, pin, key))
+    approvals = _load_approvals(Path(args.approvals)) if args.approvals else {}
+    owners = json.loads(Path(args.owners).read_text(encoding="utf-8")) if args.owners else None
+    approvers = args.approver if args.approver else None
+    try:
+        result = exp.run_export(sources, approvals, owners=owners, approvers=approvers,
+                                alert_log=Path(args.append_alerts) if args.append_alerts else None)
+    except exp.ExportError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    if args.out_csv:
+        Path(args.out_csv).write_text(result.csv(), encoding="utf-8", newline="")
+    summary = {
+        "verified": result.verified,
+        "events": len(result.rows),
+        "alerts": [a.to_dict() for a in result.result.alerts],
+        "appended": result.appended,
+    }
+    if args.json:
+        _dump(summary)
+        return 0
+    for v in result.verified:
+        print(f"verified {v['kind']} log {v['log']}: {v['entries']} entries, ok "
+              f"(covered to seq {v['covered_seq']}, head pinned: {v['head_pinned']}, key pinned: {v['key_pinned']})")
+    print(f"{len(result.rows)} events exported, {len(result.result.alerts)} alerts, "
+          f"{len(result.appended)} newly appended to the audit log\n")
+    for alert in result.result.alerts:
+        print(f"[{alert.severity.upper()}] {alert.rule}  identity: {alert.identity}")
+        print(f"  services: {', '.join(alert.services)}   events: {', '.join(alert.event_ids)}")
+        print(f"  why: {alert.explanation}\n")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m t4.detect.cli", description="Explainable rules-based detector")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -158,6 +215,17 @@ def build_parser() -> argparse.ArgumentParser:
             p.add_argument("--labels-out", action="store_true", help="also print every event's label")
         p.add_argument("--json", action="store_true")
         p.set_defaults(func=func)
+    p = sub.add_parser("export", help="verify our own logs, detect, append alerts (M-C11)")
+    p.add_argument("--node", action="append", help="node log as NODE_ID=DIR (repeatable)")
+    p.add_argument("--authority", help="authority key-event log directory")
+    p.add_argument("--pin", action="append", help="pinned head as NAME=FILE (from 'audit.cli head --out')")
+    p.add_argument("--approvals", help="change register in approvals.json format")
+    p.add_argument("--owners", help='node provisioning {"node": {"asset": "owner"}} used as baseline')
+    p.add_argument("--approver", action="append", help="authorized approver (repeatable)")
+    p.add_argument("--append-alerts", metavar="DIR", help="audit log to append alerts to")
+    p.add_argument("--out-csv", help="also write the exported events as CSV")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_export)
     return parser
 
 

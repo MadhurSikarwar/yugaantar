@@ -194,7 +194,7 @@ def analyze(events: Iterable[Event], approvals: Mapping[str, Approval],
             (e for e in events
              if e.event_id not in labels
              and e.actor == change.actor
-             and e.session_id == change.session_id
+             and (e.session_id == change.session_id or not cfg.review_same_session)
              and e.role_before == change.role_after
              and e.outcome in cfg.allow_outcomes
              and (e.corrected_time, e.receipt_index) > (change.corrected_time, change.receipt_index)),

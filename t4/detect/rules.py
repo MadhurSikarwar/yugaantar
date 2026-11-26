@@ -156,7 +156,7 @@ def match_revoke(event: Event, approvals: Approvals) -> Approval | None:
 
 def reachable_services(actor: str, role: str, moment: datetime, approvals: Approvals, cfg: DetectConfig) -> set[str]:
     """Services ``actor`` holding ``role`` may reach at ``moment``."""
-    services = set(cfg.scope_for(role))
+    services = set(cfg.scope_for(role)) | set(cfg.baseline.get(actor, frozenset()))
     revoked_at = _revocation_time(actor, role, approvals)
     for approval in approvals.values():
         if (
