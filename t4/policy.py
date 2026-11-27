@@ -32,17 +32,34 @@ RULE_UNKNOWN_ASSET = "POL-UNKNOWN-ASSET"
 RULE_NOT_OWNER = "POL-NOT-OWNER"
 RULE_ALLOW_OWNER = "POL-ALLOW-OWNER"
 
+# The rule table itself, in the order ``decide`` checks it: (rule ID, condition, allows).
+# This is the single source for anything that lists the rules (the web console reads it through
+# the bridge), so no copy of the policy exists elsewhere.
+RULES: tuple[tuple[str, str, bool], ...] = (
+    (RULE_REVOKED, "actor revoked", False),
+    (RULE_DISABLED, "actor disabled at setup", False),
+    (RULE_UNKNOWN_ASSET, "asset does not exist", False),
+    (RULE_NOT_OWNER, "actor does not own the asset", False),
+    (RULE_ALLOW_OWNER, "actor owns the asset", True),
+)
+_REASON = {rule: reason for rule, reason, _allow in RULES}
+_ALLOWS = {rule: allow for rule, _reason, allow in RULES}
+
+
+def _matching_rule(state: VaultState, actor: str, asset: str) -> str:
+    if state.is_revoked(actor):
+        return RULE_REVOKED
+    if state.is_disabled(actor):
+        return RULE_DISABLED
+    owner = state.owner_of(asset)
+    if owner is None:
+        return RULE_UNKNOWN_ASSET
+    if owner != actor:
+        return RULE_NOT_OWNER
+    return RULE_ALLOW_OWNER
+
 
 def decide(state: VaultState, actor: str, asset: str, request_id: str) -> Decision:
     """Return the decision for one read; never raises for well-formed input."""
-    epoch = state.epoch
-    if state.is_revoked(actor):
-        return Decision(False, "actor revoked", RULE_REVOKED, request_id, epoch)
-    if state.is_disabled(actor):
-        return Decision(False, "actor disabled at setup", RULE_DISABLED, request_id, epoch)
-    owner = state.owner_of(asset)
-    if owner is None:
-        return Decision(False, "asset does not exist", RULE_UNKNOWN_ASSET, request_id, epoch)
-    if owner != actor:
-        return Decision(False, "actor does not own the asset", RULE_NOT_OWNER, request_id, epoch)
-    return Decision(True, "actor owns the asset", RULE_ALLOW_OWNER, request_id, epoch)
+    rule = _matching_rule(state, actor, asset)
+    return Decision(_ALLOWS[rule], _REASON[rule], rule, request_id, state.epoch)
