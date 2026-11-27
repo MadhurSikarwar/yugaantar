@@ -196,6 +196,7 @@ def part_nodes(root: Path) -> dict:
     section("5. Key rotation under load: old key until C, new key from C, no grace period")
     c_time = phone.rotate(authority, now + 5, now + 5 + T + S + 5)
     deliver(now + 10)
+    deliver(c_time - 5)  # a list younger than T (one exactly T old is stale, like at acceptance)
     d1, r1 = ask(phone, "node-a", "plan", c_time - 2)
     deliver(c_time + 1)
     d2, r2 = ask(phone, "node-a", "plan", c_time + 2)
