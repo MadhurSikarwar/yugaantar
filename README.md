@@ -119,7 +119,7 @@ Run on 2026-11-27 on Windows 11, Python 3.13.3, `pqcrypto` 0.4.0, `cryptography`
 | `scripts/verify_dependencies.py` | no problems |
 | `tools/nodes_sim.py --nodes 4 --runs 20 --seed 1` | bound r + T + s = 62 s held, 0 violations |
 | Detector, practice set (22 events) | 22 / 22 labels correct |
-| Detector, held-out generated set (12,060 events, `events.csv` SHA-256 `9cb1d3f3…`) | 12,018 / 12,060 labels correct (99.7%), 598 alerts, 0 false alerts (11,314 benign events), median time to alert 0.239 s on the event timeline |
+| Detector, held-out generated set (12,060 events, `events.csv` SHA-256 `9cb1d3f3…`) | 12,018 / 12,060 labels correct (99.7%). F1 per suspicious label: `unexpected_role_change` 1.00, `review_after_role_change` 1.00, `lateral_movement_candidate` 0.90. 598 alerts, 0 false alerts per 1,000 benign events (11,314 benign events), median time to alert 0.239 s on the event timeline |
 
 **Clean Linux check of the submitted `main` (`cc74d20`):** a fresh `git clone` from GitHub on Ubuntu (WSL2), a new Python 3.12.3 virtual environment and `pip install -r requirements.txt -r requirements-dev.txt -r requirements-demo.txt`, with the toolkit cloned beside it. Official validator: exit 0, local scenario passed. `python -m pytest -q`: 985 passed, 0 skipped, 64 subtests passed. `tools/selfattack.py`: 251 passed, 0 failed. `scripts/sandbox_sim.py --ref HEAD`: passed, and the submission tree was never modified (it imitates the documented worker; it is not the organizers' sandbox). `scripts/e2e_checks.py`: 16 passed. `demo/run_demo.py`: all checks passed.
 
