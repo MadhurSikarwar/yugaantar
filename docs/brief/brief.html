@@ -60,13 +60,13 @@ operator: verify-log (pinned head + key) · explain · detector over our own ver
 
 <p><b>Observed outcome.</b> Measured on 2026-11-27 on Linux in local Docker (Python 3.12.16, <code>pqcrypto</code> 0.4.0, no network; not the organizers' sandbox). All data is synthetic.
 <ul>
-<li>The official validator exits 0. 889 tests pass; 1 optional messaging test file is skipped.</li>
+<li>The official validator exits 0. 957 tests pass; without the optional messaging package, 939 pass and its test file is skipped.</li>
 <li>Our own attack suite: 251 checks passed, 0 failed.</li>
 <li>Real-kill test: 1,000 SIGKILLs during key rotation, 0 failures.</li>
 <li>Our judging-worker simulator passes, and the one-command demo passes all its checks.</li>
 <li>Cold-process latency on Linux: p50 55 to 64 ms with state in a memory-backed folder.</li>
 <li>Simulated revocation across 4 nodes, 20 runs: last node enforced after at most 58 s against a 62 s bound, 0 violations.</li>
-<li>Detector: 22/22 practice events correct. On 12,060 held-out generated events, 95.3% of labels are correct; suspicious-vs-benign F1 0.73, median time to alert 0.24 s (event timeline), 11 false alerts per 1,000 benign events.</li>
+<li>Detector: 22/22 practice events correct. On 12,060 held-out generated events, 99.7% of labels are correct; suspicious-vs-benign F1 0.97, median time to alert 0.24 s (event timeline), 0 false alerts per 1,000 benign events. A second generated set (seed 424242, not used while developing): 99.7%, 0 false alerts.</li>
 </ul>
 Setup and the commands that reproduce these results are in the repository README.</p>
 </section>
@@ -106,7 +106,7 @@ Setup and the commands that reproduce these results are in the repository README
 <li>Revocation is enforced on every honest node by r + T + s. Stale nodes lock.</li>
 <li>Replayed, misdirected and forged requests and lists are rejected.</li>
 <li>Rotation and restore recover from a crash at every step. An authority restore re-applies later revocations and key versions from the vault ledger.</li>
-<li>A damaged or shortened audit log is refused and recorded in a second signed log in the same folder.</li>
+<li>A damaged or shortened audit log is refused and recorded in a second signed log in the same folder. A state file replaced by an older copy is refused and alerted.</li>
 <li>Edits, deletions, reordering and truncation before a pinned head are detected, along with the first bad entry. Hostile text cannot forge entries.</li>
 <li>Our own logs are verified before the detector runs. In the detector, requests with unverified signatures, or forwarded or replayed copies, are never attributed to the named actor.</li>
 </ul>
@@ -114,8 +114,8 @@ Setup and the commands that reproduce these results are in the repository README
 <h2>Exclusions and remaining risks</h2>
 <ul>
 <li><b>No caller authentication in the adapter.</b> Anyone can claim any actor.</li>
-<li>Whoever can write a directory can read its signing key and rebuild its log. A pin exposes this only up to the pinned entry. Entries after the newest checkpoint or pin can be cut unnoticed. A full rollback of a state directory is not detectable locally.</li>
-<li><b>Other limits:</b> about 700,000 revocations of new names (measured at 72 bytes each) fill the state store, after which new revocations fail. Audit logs grow without limit (5 to 25 KB per hostile 4 KiB read). The running service fully re-checks logs up to 256 KiB on each write. Older parts of larger logs need an operator's <code>verify-log</code>. The authority does not authenticate its operator, including for rotation. Backups are not encrypted, a restore loses newer enrolments and grants, and it depends on the current vault ledger. An accepted list may be missing from a node log if the write fails.</li>
+<li>Whoever can write a directory can read its signing key and rebuild its log. A pin exposes this only up to the pinned entry. Entries after the newest checkpoint or pin can be cut unnoticed. A full rollback of a state directory (state and log together) is not detectable locally.</li>
+<li><b>Other limits:</b> about 700,000 revocations of new names (measured at 72 bytes each) fill the state store, after which new revocations fail. Audit logs grow without limit (5 to 25 KB per hostile 4 KiB read; node logs 7 to 14 KB per request). The running service re-checks the whole log on every write up to 256 KiB and on every 16th write up to 8 MiB. Older parts of larger logs need an operator's <code>verify-log</code>. The authority does not authenticate its operator, including for rotation. Backups are not encrypted, a restore loses newer enrolments and grants, and it depends on the current vault ledger. An accepted list may be missing from a node log if the write fails.</li>
 <li>No transport encryption and no forward secrecy (goals 10 to 12 are not supported; goal 9 only in the demo layer). A reused <code>protected_read</code> challenge is accepted.</li>
 <li>The detector is measured only on synthetic data: 22 practice rows cannot establish accuracy, and the held-out set reflects our own assumptions. Linux was tested locally and in Docker, not on the organizer sandbox. A state folder we own is made private (0700). In a shared folder like /tmp, we use our own subfolder.</li>
 </ul>
