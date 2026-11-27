@@ -533,6 +533,32 @@ class AuditLog:
             raise AuditError("audit log could not be read") from None
         return parse_line(lines[-1])["seq"] if lines else 0
 
+    def newest_value(self, name: str, lines: int = 256) -> int | None:
+        """Highest integer ``detail[name]`` among the newest complete entries, or ``None``.
+
+        Reads only the tail and does not verify the chain (the append that follows does). Starts
+        with the newest ``lines`` entries and widens the window (x16 each time) while none of them
+        carries the value, so a run of entries without it (alerts, for example) cannot hide it; the
+        whole log is read only if no entry has the value at all. The service uses it to notice saved
+        state that is OLDER than its own log: the epoch written into every decision only ever goes
+        up, so a log that recorded a higher epoch than the state means the state file was replaced
+        by an earlier copy.
+        """
+        window = max(1, lines)
+        while True:
+            try:
+                tail, _partial = _tail(self.log_path, window)
+            except OSError:
+                raise AuditError("audit log could not be read") from None
+            best = None
+            for raw in tail:
+                value = parse_line(raw)["detail"].get(name)
+                if type(value) is int and (best is None or value > best):
+                    best = value
+            if best is not None or len(tail) < window:  # found, or the whole log was read
+                return best
+            window *= 16
+
     # ---- reading -----------------------------------------------------------------
 
     def iter_entries(self):

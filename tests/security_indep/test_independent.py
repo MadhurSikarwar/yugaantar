@@ -334,11 +334,32 @@ def test_backup_corruption_fallback(folder):
     assert n.accept_list(a.issue_list(104),104)
     assert respond(n,d.make_request('n','a',104),104)=={'decision':'deny'}
 
-def test_single_state_rollback_is_documented_limit(folder):
+def test_single_state_rollback_fails_closed_and_setup_recovers(folder):
+    setup(folder); old=(folder/'state.json').read_bytes()
+    ok(folder,dict(op='revoke',actor='alice'))
+    (folder/'state.json').write_bytes(old)  # an earlier copy of the state file, same key
+    for request in (dict(op='read',actor='alice',asset='a',request_id='rollback'),
+                    dict(op='read',actor='bob',asset='b',request_id='rollback-peer'),
+                    dict(op='revoke',actor='bob')):
+        p = call(folder, request)
+        assert p.returncode == 1 and p.stdout == b'' and b'synthetic' not in p.stderr
+        assert b'state-rollback' in p.stderr
+    log = (folder/'audit'/'audit.jsonl').read_text()
+    assert '"category":"state-rollback"' in log and 'STO-INTEGRITY-FAILURE' in log
+    alert = [json.loads(l) for l in log.splitlines() if '"category":"state-rollback"' in l][0]
+    assert alert['detail']['epoch'] == 1  # the alert keeps the epoch the log had reached
+    setup(folder)  # the operator's reset continues the epoch, so the service works again
+    assert ok(folder,dict(op='read',actor='alice',asset='a',request_id='after-setup'))['decision']=='allow'
+
+def test_state_rollback_cannot_be_hidden_behind_many_entries_without_an_epoch(folder):
     setup(folder); old=(folder/'state.json').read_bytes()
     ok(folder,dict(op='revoke',actor='alice'))
     (folder/'state.json').write_bytes(old)
-    assert ok(folder,dict(op='read',actor='alice',asset='a',request_id='rollback'))['decision']=='allow'
+    log = AuditLog(folder/'audit', load_or_create_signer(folder/'audit'))
+    for i in range(300):  # more than the first tail window, none carrying an epoch
+        log.alert(rule='TEST-FILLER', explanation='filler', request_id=f'f{i}')
+    p = call(folder, dict(op='read',actor='alice',asset='a',request_id='hidden'))
+    assert p.returncode == 1 and p.stdout == b'' and b'state-rollback' in p.stderr
 
 @pytest.mark.parametrize('offset',[-2,0,2])
 def test_disconnected_revocation_bound(folder,offset):

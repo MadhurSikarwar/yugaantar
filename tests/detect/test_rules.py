@@ -80,16 +80,49 @@ def test_approval_action_by_unauthorized_operator_alerts():
     assert alerts[0].rule == "DET-UNAUTHORIZED-APPROVAL"
 
 
-def test_only_next_allowed_action_is_review():
+def test_every_use_of_the_unapproved_role_is_review_until_the_role_changes():
+    evs = events(
+        _change(approval_id=""),
+        row("e2", 121, role="report-reader", target="catalog"),
+        row("e3", 122, role="report-reader", target="catalog"),
+        row("e4", 123, actor="user-a", source="admin-console", target="identity", action="role_change",
+            role="report-reader", role_after="viewer", outcome="success"),
+        row("e5", 124, role="report-reader", target="catalog"),  # after the role changed again
+    )
+    pred, alerts = labels(evs)
+    assert pred["e2"] == pred["e3"] == "review_after_role_change"
+    assert pred["e5"] != "review_after_role_change"
+    assert [a.rule for a in alerts][:3] == ["DET-UNAPPROVED-ROLE-CHANGE", "DET-REVIEW-AFTER-ROLE-CHANGE",
+                                            "DET-REVIEW-AFTER-ROLE-CHANGE"]
+
+
+def test_review_followups_can_be_limited_to_the_next_action():
     evs = events(
         _change(approval_id=""),
         row("e2", 121, role="report-reader", target="catalog"),
         row("e3", 122, role="report-reader", target="catalog"),
     )
-    pred, alerts = labels(evs)
+    pred, alerts = labels(evs, cfg=replace(DEFAULT_CONFIG, review_followups=1))
     assert pred["e2"] == "review_after_role_change"
     assert pred["e3"] == "routine"
     assert [a.rule for a in alerts] == ["DET-UNAPPROVED-ROLE-CHANGE", "DET-REVIEW-AFTER-ROLE-CHANGE"]
+
+
+def test_denial_after_approval_ended_is_routine_denial():
+    # grant() covers reports for user-a until 420; a denied reports read afterwards is the system working
+    evs = events(row("e1", 500, role="viewer", target="reports", outcome="deny"),
+                 row("e2", 501, role="viewer", target="reports-node-a", outcome="deny"))
+    pred, alerts = labels(evs, approvals(grant(scope=("reports", "reports-node-a"))))
+    assert pred == {"e1": "routine_denial", "e2": "routine_denial"}
+    assert alerts == []
+
+
+def test_denial_outside_the_ended_scope_is_still_judged():
+    evs = events(row("e1", 500, role="viewer", target="billing", outcome="deny"),
+                 row("e2", 501, role="viewer", target="archive", outcome="deny"))
+    pred, alerts = labels(evs, approvals(grant(scope=("reports",))))
+    assert pred == {"e1": "lateral_movement_candidate", "e2": "lateral_movement_candidate"}
+    assert [a.rule for a in alerts] == ["DET-LATERAL-MOVEMENT"]
 
 
 def test_review_requires_same_session():
