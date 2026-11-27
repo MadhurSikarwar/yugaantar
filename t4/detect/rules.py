@@ -289,14 +289,36 @@ def movement_chains(candidates: Iterable[Event], cfg: DetectConfig) -> list[list
     return chains
 
 
-def movement_trigger(chain: Sequence[Event], cfg: DetectConfig) -> Event | None:
-    """The event, in receipt order, at which the chain first reaches N services."""
-    seen: set[str] = set()
+def movement_detection(chain: Sequence[Event], cfg: DetectConfig) -> tuple[Event, list[Event]] | None:
+    """The earliest point, in receipt order, at which the events received so far already form a
+    movement chain on their own, and the events that chain needs.
+
+    Counting services in receipt order is not enough: two events more than W apart only form a
+    chain through a connecting event, and that event may arrive later than both. So after each
+    arrival the received events are re-chained by corrected time with the same W rule, and the
+    alert is due only once one of those sub-chains reaches N services. The returned evidence is
+    that whole sub-chain, connecting events included.
+    """
+    window = timedelta(seconds=cfg.movement_window_s)
+    arrived: list[Event] = []
     for event in sorted(chain, key=lambda e: e.receipt_index):
-        seen.add(event.target_service)
-        if len(seen) >= cfg.movement_min_services:
-            return event
+        arrived.append(event)
+        ordered = sorted(arrived, key=lambda e: (e.corrected_time, e.receipt_index))
+        sub: list[Event] = []
+        for item in ordered + [None]:
+            if item is None or (sub and item.corrected_time - sub[-1].corrected_time > window):
+                if event in sub and len({e.target_service for e in sub}) >= cfg.movement_min_services:
+                    return event, sub
+                sub = []
+            if item is not None:
+                sub.append(item)
     return None
+
+
+def movement_trigger(chain: Sequence[Event], cfg: DetectConfig) -> Event | None:
+    """The event, in receipt order, whose arrival first makes the received events a chain of N services."""
+    found = movement_detection(chain, cfg)
+    return found[0] if found else None
 
 
 def event_uncertainty_ms(event: Event, cfg: DetectConfig) -> float:

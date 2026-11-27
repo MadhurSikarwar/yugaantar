@@ -306,7 +306,10 @@ def analyze(events: Iterable[Event], approvals: Mapping[str, Approval],
         if len(services) < cfg.movement_min_services:
             lone.extend(chain)
             continue
-        trigger = rules.movement_trigger(chain, cfg) or chain[-1]
+        # The alert is due only when the events received so far form a chain on their own; the
+        # connecting events of that chain are required evidence (a late bridge delays the alert).
+        found = rules.movement_detection(chain, cfg)
+        trigger, needed = found if found else (max(chain, key=lambda e: e.receipt_index), list(chain))
         path = ", ".join(f"{e.source_service}->{e.target_service} ({e.outcome}, {e.event_id})" for e in chain)
         allowed = [e.event_id for e in chain if e.outcome in cfg.allow_outcomes]
         access = (f"successful access in {', '.join(allowed)}" if allowed
@@ -321,7 +324,7 @@ def analyze(events: Iterable[Event], approvals: Mapping[str, Approval],
             f"{cfg.movement_window_s:g} s steps in session {chain[0].session_id} "
             f"(correlation {', '.join(sorted({e.correlation_id for e in chain}))}): {path}; {access}. "
             "Candidate sequence only: this does not establish compromise.",
-            cfg))
+            cfg, evidence=needed))
 
     for event in lone:
         if event.outcome in cfg.deny_outcomes:
