@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
 import {
-  GENESIS_HASH,
   entryHash,
+  genesisHash,
   seal,
+  sha256Hex,
   verifyChain,
 } from "../src/lib/ledger.ts";
 import { decide as policy } from "../src/lib/policy.ts";
@@ -18,22 +19,21 @@ import {
   setConnected,
 } from "../src/lib/revocation.ts";
 import { sampleSnapshot } from "../src/lib/sample.ts";
-import { sha256Hex } from "../src/lib/sha256.ts";
 import { ruleCounts, timeBuckets } from "../src/lib/stats.ts";
 import { parseSnapshot } from "../src/snapshot.ts";
 
-test("SHA-256 agrees with the Node implementation across block boundaries", () => {
+test("Web Crypto SHA-256 agrees with the Node implementation across block boundaries", async () => {
   for (let length = 0; length < 200; length++) {
     const data = Uint8Array.from({ length }, (_, i) => (i * 31 + length) & 255);
     assert.equal(
-      sha256Hex(data),
+      await sha256Hex(data),
       createHash("sha256").update(data).digest("hex"),
     );
   }
 });
 
 // Reference values produced by t4.audit.log.entry_hash in the Python backend.
-test("ledger hashes match the backend's entry_hash", () => {
+test("ledger hashes match the backend's entry_hash", async () => {
   const first = {
     seq: 1,
     ts: "2026-11-27T09:00:00Z",
@@ -45,11 +45,12 @@ test("ledger hashes match the backend's entry_hash", () => {
     request_id: "r1",
     detail: {},
   };
+  const genesis = await genesisHash();
   assert.equal(
-    GENESIS_HASH,
+    genesis,
     "4ace6cae2a9f18a3ca43251a01d9b7528533ff7c9981dd744953d802de7c95e2",
   );
-  const h1 = entryHash(first, GENESIS_HASH);
+  const h1 = await entryHash(first, genesis);
   assert.equal(
     h1,
     "a02d424e2484a11af36627d2cc9508f5c483dc1a8d95345f3940dee6a752aa1e",
@@ -62,12 +63,12 @@ test("ledger hashes match the backend's entry_hash", () => {
     detail: { node_id: "node-a", epoch: 3 },
   };
   assert.equal(
-    entryHash(second, h1),
+    await entryHash(second, h1),
     "56575f3324c3f0fd8012422bf6477d8fc638321746cf49c8f9ad87630ff6d71c",
   );
 });
 
-test("an edit breaks the chain; a rewrite is caught only by the pin", () => {
+test("an edit breaks the chain; a rewrite is caught only by the pin", async () => {
   const entry = (seq, decision) => ({
     seq,
     ts: "2026-11-26T09:00:00Z",
@@ -79,22 +80,26 @@ test("an edit breaks the chain; a rewrite is caught only by the pin", () => {
     request_id: `r${seq}`,
     detail: {},
   });
-  const log = seal([entry(1, "allow"), entry(2, "deny"), entry(3, "deny")]);
+  const log = await seal([
+    entry(1, "allow"),
+    entry(2, "deny"),
+    entry(3, "deny"),
+  ]);
   const pin = log[2].hash;
-  assert.deepEqual(verifyChain(log, pin), {
+  assert.deepEqual(await verifyChain(log, pin), {
     brokenAt: null,
     matchesPin: true,
   });
   const edited = log.map((e) =>
     e.seq === 2 ? { ...e, decision: "allow" } : e,
   );
-  assert.equal(verifyChain(edited, pin).brokenAt, 2);
-  assert.deepEqual(verifyChain(seal(edited), pin), {
+  assert.equal((await verifyChain(edited, pin)).brokenAt, 2);
+  assert.deepEqual(await verifyChain(await seal(edited), pin), {
     brokenAt: null,
     matchesPin: false,
   });
   // Cutting off the tail is also visible against the pin.
-  assert.equal(verifyChain(log.slice(0, 2), pin).matchesPin, false);
+  assert.equal((await verifyChain(log.slice(0, 2), pin)).matchesPin, false);
 });
 
 test("policy rules apply in the backend's order", () => {

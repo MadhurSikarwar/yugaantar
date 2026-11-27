@@ -1,8 +1,9 @@
-import { useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   seal,
   verifyChain,
   type LedgerEntry,
+  type LedgerReport,
   type StoredEntry,
 } from "../lib/ledger.ts";
 
@@ -25,19 +26,55 @@ const entry = (
   detail: {},
 });
 
-const original = seal([
+const unsealed: LedgerEntry[] = [
   entry(1, "maya", "read", "brief", "allow", "POL-ALLOW-OWNER"),
   entry(2, "operator", "revoke", "maya", "allow", "ADM-REVOKE"),
   entry(3, "maya", "read", "brief", "deny", "POL-REVOKED"),
   entry(4, "noor", "read", "ledger", "allow", "POL-ALLOW-OWNER"),
   entry(5, "eve", "read", "ledger", "deny", "POL-NOT-OWNER"),
-]);
-const pinned = original.at(-1)!.hash;
+];
 const short = (hash: string) => `${hash.slice(0, 8)}…${hash.slice(-6)}`;
 
+/** Hashes come from Web Crypto, which is asynchronous: seal once, then show the lab. */
 export default function LedgerLab() {
+  const [original, setOriginal] = useState<StoredEntry[] | null>(null);
+  useEffect(() => {
+    let live = true;
+    void seal(unsealed).then((sealed) => live && setOriginal(sealed));
+    return () => {
+      live = false;
+    };
+  }, []);
+  if (original === null)
+    return (
+      <section
+        className="lab ledger"
+        id="ledger"
+        aria-labelledby="ledger-title"
+      >
+        <header className="lab-intro">
+          <h2 id="ledger-title">What happens if someone edits the log</h2>
+          <p role="status">Computing hashes…</p>
+        </header>
+      </section>
+    );
+  return <Ledger original={original} />;
+}
+
+function Ledger({ original }: { original: StoredEntry[] }) {
+  const pinned = original.at(-1)!.hash;
   const [entries, setEntries] = useState<StoredEntry[]>(original);
-  const report = useMemo(() => verifyChain(entries, pinned), [entries]);
+  const [report, setReport] = useState<LedgerReport>({
+    brokenAt: null,
+    matchesPin: true,
+  });
+  useEffect(() => {
+    let live = true;
+    void verifyChain(entries, pinned).then((r) => live && setReport(r));
+    return () => {
+      live = false;
+    };
+  }, [entries, pinned]);
   const edited = entries.some((e, i) => e.decision !== original[i].decision);
   const flip = (seq: number) =>
     setEntries((current) =>
@@ -60,7 +97,7 @@ export default function LedgerLab() {
         <p>
           Each entry is hashed together with the hash before it. Change a
           decision below and see which check notices. The SHA-256 hashes are
-          computed on this page.
+          computed on this page by the browser's built-in Web Crypto API.
         </p>
       </header>
       <div className="ledger-scroll">
@@ -144,7 +181,7 @@ export default function LedgerLab() {
       <div className="ledger-actions">
         <button
           className="button button-dark"
-          onClick={() => setEntries((current) => seal(current))}
+          onClick={() => void seal(entries).then(setEntries)}
           disabled={report.brokenAt === null}
         >
           Recompute every hash, like an attacker

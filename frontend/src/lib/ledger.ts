@@ -1,9 +1,9 @@
 /**
  * Browser mirror of the hash rule in t4/audit/log.py:
  * hash_n = SHA-256(canonical(entry without "hash") || hash_{n-1}).
- * It signs nothing: ML-DSA checkpoints exist only in the backend.
+ * SHA-256 comes from the browser's built-in Web Crypto API (crypto.subtle); this file implements
+ * no cryptography. It signs nothing: ML-DSA checkpoints exist only in the backend.
  */
-import { sha256Hex } from "./sha256.ts";
 
 export interface LedgerEntry {
   seq: number;
@@ -19,6 +19,15 @@ export interface LedgerEntry {
 export type StoredEntry = LedgerEntry & { hash: string };
 
 const encoder = new TextEncoder();
+
+/** SHA-256 of ``data`` as lowercase hex, computed by the platform (Web Crypto). */
+export async function sha256Hex(data: Uint8Array): Promise<string> {
+  // A copy backed by a plain ArrayBuffer, which is what Web Crypto's BufferSource type requires.
+  const digest = await crypto.subtle.digest("SHA-256", new Uint8Array(data));
+  return Array.from(new Uint8Array(digest), (b) =>
+    b.toString(16).padStart(2, "0"),
+  ).join("");
+}
 
 /** Python's json.dumps(sort_keys=True, separators=(",", ":"), ensure_ascii=True) for JSON data. */
 export function canonical(value: unknown): string {
@@ -41,12 +50,13 @@ export function canonical(value: unknown): string {
   return JSON.stringify(value);
 }
 
-export const GENESIS_HASH = sha256Hex(encoder.encode("t4-audit-genesis-v1"));
+export const genesisHash = (): Promise<string> =>
+  sha256Hex(encoder.encode("t4-audit-genesis-v1"));
 
-export function entryHash(
+export async function entryHash(
   entry: LedgerEntry | StoredEntry,
   previousHash: string,
-): string {
+): Promise<string> {
   const body: Record<string, unknown> = { ...entry };
   delete body.hash;
   const head = encoder.encode(canonical(body));
@@ -61,12 +71,16 @@ export function entryHash(
 }
 
 /** Write a consistent chain, as the service (or an attacker holding the directory) would. */
-export function seal(entries: (LedgerEntry | StoredEntry)[]): StoredEntry[] {
-  let previous = GENESIS_HASH;
-  return entries.map((entry) => {
-    previous = entryHash(entry, previous);
-    return { ...entry, hash: previous };
-  });
+export async function seal(
+  entries: (LedgerEntry | StoredEntry)[],
+): Promise<StoredEntry[]> {
+  let previous = await genesisHash();
+  const sealed: StoredEntry[] = [];
+  for (const entry of entries) {
+    previous = await entryHash(entry, previous);
+    sealed.push({ ...entry, hash: previous });
+  }
+  return sealed;
 }
 
 export interface LedgerReport {
@@ -76,14 +90,14 @@ export interface LedgerReport {
   matchesPin: boolean;
 }
 
-export function verifyChain(
+export async function verifyChain(
   entries: StoredEntry[],
   pinnedHead: string,
-): LedgerReport {
-  let previous = GENESIS_HASH;
+): Promise<LedgerReport> {
+  let previous = await genesisHash();
   let brokenAt: number | null = null;
   for (const entry of entries) {
-    if (entryHash(entry, previous) !== entry.hash) {
+    if ((await entryHash(entry, previous)) !== entry.hash) {
       brokenAt = entry.seq;
       break;
     }
