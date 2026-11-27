@@ -75,7 +75,8 @@ export function createSim(): Sim {
 }
 
 export function decide(node: SimNode, device: DeviceId, t: number) {
-  if (t - node.list.issuedAt > T)
+  // A list exactly T old is stale, the same boundary the node uses to accept lists.
+  if (t - node.list.issuedAt >= T)
     return { allow: false, rule: "NODE-STALE-LIST" };
   if (device === "maya-phone" && node.list.revokesPhone)
     return { allow: false, rule: "NODE-DEVICE-REVOKED" };
@@ -153,7 +154,7 @@ const TICK = 0.25;
 export function advance(previous: Sim, seconds: number): Sim {
   const sim = copy(previous);
   for (let left = seconds; left > 1e-9; left -= TICK) {
-    const before = sim.nodes.map((n) => sim.t - n.list.issuedAt > T);
+    const before = sim.nodes.map((n) => sim.t - n.list.issuedAt >= T);
     sim.t += Math.min(TICK, left);
     while (sim.t >= sim.nextHeartbeat) {
       issue(sim);
@@ -167,7 +168,7 @@ export function advance(previous: Sim, seconds: number): Sim {
         node.list = packet.list;
     }
     sim.nodes.forEach((node, i) => {
-      if (!before[i] && sim.t - node.list.issuedAt > T)
+      if (!before[i] && sim.t - node.list.issuedAt >= T)
         log(
           sim,
           `${node.id} has no list newer than ${T} s and now denies everyone.`,
