@@ -7,6 +7,8 @@ A protected-file service for the lost-device case: an owner reads a file, access
 - **Post-quantum parts:** ML-KEM-768 for the `protected_read` proof; ML-DSA-65 for audit checkpoints, device requests and revocation lists.
 - **What it does not do:** it does not encrypt files in transit, and the five-operation adapter does not authenticate callers (it checks permission for the `actor` it is given). Device identity is verified in the node layer.
 
+**Two-page brief (submission):** [`yugaantar-two-page-brief.pdf`](yugaantar-two-page-brief.pdf)
+
 ## Contents
 
 | Path | What |
