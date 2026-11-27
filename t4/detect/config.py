@@ -88,8 +88,10 @@ class DetectConfig:
     deny_outcomes: frozenset[str] = frozenset({"deny"})
 
     # How many allowed actions after an unapproved role change are labelled
-    # review_after_role_change ("the next privileged read").
-    review_followups: int = 1
+    # review_after_role_change. ``None`` (the default) means every allowed action that still
+    # uses the unapproved role: each one is a use of privilege nobody approved. A whole number
+    # limits it (1 = only "the next privileged read").
+    review_followups: int | None = None
     # Whether the follow-up must share the role change's session. Our own key
     # events (grants) carry no device session, so ``export`` turns this off.
     review_same_session: bool = True

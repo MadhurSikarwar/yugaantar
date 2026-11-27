@@ -37,7 +37,7 @@ import hashlib
 import json
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable
 
 from t4.api import (
@@ -88,6 +88,16 @@ class AuditHistoryLost(IntegrityError):
     """The audit log ends before an entry that the saved state knows was written."""
 
 
+class StateRolledBack(IntegrityError):
+    """The saved state is older than what the audit log recorded (an earlier copy was restored)."""
+
+    category = "state-rollback"
+
+    def __init__(self, message: str, logged_epoch: int) -> None:
+        super().__init__(message)
+        self.logged_epoch = logged_epoch
+
+
 class VaultService:
     def __init__(self, deps: Dependencies) -> None:
         self._deps = deps
@@ -112,6 +122,23 @@ class VaultService:
             error = AuditHistoryLost("the audit log has lost entries the state recorded")
             self._deps.on_audit_failure(error)
             raise error
+
+    def _require_current_state(self, state: VaultState) -> None:
+        """Refuse to decide from saved state that is older than the audit log.
+
+        Every decision and revocation entry records the epoch the state had, and the epoch only
+        ever goes up (also across ``setup``). If the newest entries name a higher epoch than the
+        loaded state, the state file was replaced by an earlier copy, and revocations made since
+        would silently stop applying. That is treated like any other integrity failure: the request
+        fails closed and an alert is recorded. (Restoring the WHOLE folder, log included, still
+        passes; only a pin kept elsewhere exposes that. See the README.)
+        """
+        newest = getattr(self._audit(), "newest_value", None)
+        if not callable(newest):
+            return
+        logged = newest("epoch")
+        if logged is not None and logged > state.epoch:
+            raise StateRolledBack("the saved state is older than the audit log", logged)
 
     @staticmethod
     def _internal_id() -> str:
@@ -179,6 +206,13 @@ class VaultService:
                 self._require_history(state)
             except AuditHistoryLost:
                 self._note("Earlier audit history is missing; an alert was recorded.")
+            # A new generation continues from the highest epoch the log has seen, so the epoch keeps
+            # going up even if the state file was replaced by an older copy: ``setup`` is how an
+            # operator recovers from that (see ``_require_current_state``).
+            newest = getattr(self._audit(), "newest_value", None)
+            logged = newest("epoch") if callable(newest) else None
+            if logged is not None and logged > state.epoch:
+                state.epoch = logged
             entry = self._audit().append(
                 actor=UNATTRIBUTED,
                 action="setup",
@@ -202,6 +236,7 @@ class VaultService:
     def read(self, request: ReadRequest) -> dict:
         with self._deps.store.locked() as txn:
             state = VaultState.load(txn)
+            self._require_current_state(state)
             decision = decide(state, request.actor, request.asset, request.request_id)
             label = "allow" if decision.allow else "deny"
             self._require_history(state)
@@ -237,6 +272,9 @@ class VaultService:
     def revoke(self, request: RevokeRequest) -> dict:
         with self._deps.store.locked() as txn:
             state = VaultState.load(txn)
+            # Before changing anything: a revocation written into an older copy of the state would
+            # raise its epoch back to the log's and hide that earlier revocations were lost.
+            self._require_current_state(state)
             newly_revoked = state.revoke(request.actor)
             state.save(txn)
             txn.commit()  # durable BEFORE logging
@@ -277,6 +315,7 @@ class VaultService:
         challenge_sha256 = hashlib.sha256(request.challenge.encode("utf-8")).hexdigest()
         with self._deps.store.locked() as txn:
             state = VaultState.load(txn)
+            self._require_current_state(state)
             decision = decide(state, request.actor, request.asset, request_id)
             detail = {**self._decision_detail(state, decision), "challenge_sha256": challenge_sha256}
             self._require_history(state)
@@ -404,6 +443,10 @@ class VaultService:
     def report_integrity_failure(self, error: IntegrityError) -> None:
         """Record that stored state could not be trusted (state itself is not touched)."""
         alert = integrity_alert(error.category)
+        if isinstance(error, StateRolledBack):
+            # The alert keeps the epoch the log had reached, so a stream of refused requests (each
+            # adding an alert) can never push that epoch out of the log tail the check reads.
+            alert = replace(alert, detail={**alert.detail, "epoch": error.logged_epoch})
         try:
             self._emit_alerts([alert], actor=UNATTRIBUTED, target="vault", request_id=self._internal_id())
         except Exception:  # noqa: BLE001

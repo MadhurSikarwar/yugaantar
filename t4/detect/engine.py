@@ -156,7 +156,7 @@ def _conflict_explanation(event: Event) -> str:
 @dataclass
 class _PendingReview:
     change: Event
-    remaining: int
+    remaining: int | None  # None: every follow-up
 
 
 def analyze(events: Iterable[Event], approvals: Mapping[str, Approval],
@@ -207,17 +207,25 @@ def analyze(events: Iterable[Event], approvals: Mapping[str, Approval],
                 put(event, "routine", "DET-ROLE-DECREASE",
                     f"{event.actor} {event.role_before} -> {event.role_after} lowers privilege")
 
-    # Step 3: follow-up use of an unapproved role.
+    # Step 3: follow-up use of an unapproved role, until the actor's role changes again.
+    by_actor: dict[str, list[Event]] = {}
+    for event in events:
+        by_actor.setdefault(event.actor, []).append(event)
     for review in pending:
         change = review.change
+        after = (change.corrected_time, change.receipt_index)
+        later_changes = [(e.corrected_time, e.receipt_index) for e in by_actor[change.actor]
+                         if e.role_before != e.role_after and e.outcome in cfg.allow_outcomes
+                         and (e.corrected_time, e.receipt_index) > after]
+        until = min(later_changes) if later_changes else None
         followups = sorted(
-            (e for e in events
+            (e for e in by_actor[change.actor]
              if e.event_id not in labels
-             and e.actor == change.actor
              and (e.session_id == change.session_id or not cfg.review_same_session)
              and e.role_before == change.role_after
              and e.outcome in cfg.allow_outcomes
-             and (e.corrected_time, e.receipt_index) > (change.corrected_time, change.receipt_index)),
+             and (e.corrected_time, e.receipt_index) > after
+             and (until is None or (e.corrected_time, e.receipt_index) < until)),
             key=lambda e: (e.corrected_time, e.receipt_index),
         )
         for event in followups[: review.remaining]:
@@ -230,18 +238,33 @@ def analyze(events: Iterable[Event], approvals: Mapping[str, Approval],
                 f"{event.outcome}) after the unapproved change in {change.event_id}. Review this access.",
                 cfg, evidence=[change]))
 
-    # Step 4: denials and service edges.
+    # Step 4: denials and service edges. The rules used from here on only ever look at approvals
+    # whose subject is the event's actor, so each event is checked against that subset (same
+    # results, same order) instead of every approval: this keeps the run close to linear.
+    by_subject: dict[str, dict[str, Approval]] = {}
+    for approval_id, approval in approvals.items():
+        by_subject.setdefault(approval.subject, {})[approval_id] = approval
+
+    def mine(event: Event) -> Mapping[str, Approval]:
+        return by_subject.get(event.actor, {})
+
     candidates: list[Event] = []
     for event in events:
         if event.event_id in labels:
             continue
-        revoke = rules.revocation_for_denial(event, approvals, cfg)
+        revoke = rules.revocation_for_denial(event, mine(event), cfg)
         if revoke is not None:
             put(event, "routine_denial", "DET-DENIAL-AFTER-REVOCATION",
                 f"{event.target_service} denied {event.actor} after {revoke.approval_id} revoked "
                 f"{revoke.role} at {iso_z(revoke.effective_at)}")
             continue
-        if rules.is_unexpected_edge(event, approvals, cfg):
+        ended = rules.ended_grant_for_denial(event, mine(event), cfg)
+        if ended is not None:
+            put(event, "routine_denial", "DET-DENIAL-AFTER-APPROVAL-ENDED",
+                f"{event.target_service} denied {event.actor} after {ended.approval_id} "
+                f"({ended.role}) ended at {iso_z(ended.valid_until)} (end exclusive)")
+            continue
+        if rules.is_unexpected_edge(event, mine(event), cfg):
             candidates.append(event)
 
     # Roles we know something about: configured, named by an approval, or granted in this data.
@@ -279,8 +302,8 @@ def analyze(events: Iterable[Event], approvals: Mapping[str, Approval],
         else:
             rule = "DET-UNEXPECTED-EDGE"
             allowed = event.outcome in cfg.allow_outcomes
-            revoked = rules.covering_revocation(event, approvals, cfg) if allowed else None
-            expired = rules.expired_grant(event, approvals, cfg) if allowed and revoked is None else None
+            revoked = rules.covering_revocation(event, mine(event), cfg) if allowed else None
+            expired = rules.expired_grant(event, mine(event), cfg) if allowed and revoked is None else None
             if revoked is not None:
                 severity = "high"
                 why = (f"after {revoked.approval_id} revoked {revoked.role} at "

@@ -212,6 +212,24 @@ def revocation_for_denial(event: Event, approvals: Approvals, cfg: DetectConfig)
     return covering_revocation(event, approvals, cfg)
 
 
+def ended_grant_for_denial(event: Event, approvals: Approvals, cfg: DetectConfig) -> Approval | None:
+    """An authorized grant whose validity ended before this DENIAL and that covered its target.
+
+    The same reasoning as a denial after a revocation: access that ran out is refused, which is
+    the system working. The role the event reports does not have to match (after the grant ends the
+    subject is usually back to a lower role); the subject and the target must.
+    """
+    if event.outcome not in cfg.deny_outcomes:
+        return None
+    for approval in approvals.values():
+        if (approval.operation == "grant_role" and approval.subject == event.actor
+                and approval.approved_by in cfg.authorized_approvers
+                and approval.valid_until is not None and approval.valid_until <= event.corrected_time
+                and event.target_service in approval.scope):
+            return approval
+    return None
+
+
 def expired_grant(event: Event, approvals: Approvals, cfg: DetectConfig) -> Approval | None:
     """An authorized grant that covered this target but had ended before the event."""
     for approval in approvals.values():
