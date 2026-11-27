@@ -45,16 +45,16 @@ class Consistency(unittest.TestCase):
         self.revoke("mallory")
         result = check(self.dir)
         self.assertTrue(result["checked"] and not result["problems"], result)
-        self.assertEqual(result["state"]["epoch"], 2)
+        self.assertEqual(result["state"]["epoch"], 3)  # setup raises it to 1, each revocation by 1
 
     def test_a_state_file_rolled_back_on_its_own_is_detected(self):
         self.revoke("eve")
-        old_state = (self.dir / "state.json").read_bytes()  # epoch 1
-        self.revoke("mallory")                               # epoch 2, logged
+        old_state = (self.dir / "state.json").read_bytes()  # epoch 2 (setup 1, revocation 2)
+        self.revoke("mallory")                               # epoch 3, logged
         (self.dir / "state.json").write_bytes(old_state)     # only the state goes back
         result = check(self.dir)
         self.assertTrue(result["checked"])
-        self.assertTrue(any("epoch 1" in p and "epoch 2" in p for p in result["problems"]), result)
+        self.assertTrue(any("epoch 2" in p and "epoch 3" in p for p in result["problems"]), result)
 
     def test_a_whole_directory_rolled_back_together_is_not_seen_by_this_check(self):
         """Documented limit: state and log agree with each other, so only an outside pin shows it."""

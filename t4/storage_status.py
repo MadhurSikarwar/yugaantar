@@ -35,6 +35,21 @@ def _size(path: Path) -> int:
         return 0
 
 
+def pending_audit(state_file: Path) -> dict:
+    """Queued administrative audit entries (degraded logging), read without changing anything.
+
+    The state file's integrity tag is NOT checked here (this is a monitoring report, not a
+    decision); the service checks it on every request.
+    """
+    try:
+        docs = json.loads(state_file.read_bytes())["docs"]
+        pending = docs.get("pending") or {}
+        return {"pending_audit_entries": len(pending.get("audit", [])),
+                "pending_audit_dropped": int(pending.get("dropped", 0))}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return {"pending_audit_entries": 0, "pending_audit_dropped": 0}
+
+
 def report(state_dir: Path, *, warn_free_mb: float = 512, critical_free_mb: float = 64,
            warn_audit_mb: float = 256, warn_state_mb: float = MAX_WRITE_BYTES / MB * 0.75) -> dict:
     """Sizes, free space and the warnings they imply, for the effective state directory."""
@@ -47,8 +62,16 @@ def report(state_dir: Path, *, warn_free_mb: float = 512, critical_free_mb: floa
         "audit_checkpoints_bytes": _size(audit / "checkpoints.jsonl"),
     }
     sizes["audit_total_bytes"] = sizes["audit_log_bytes"] + sizes["audit_checkpoints_bytes"]
+    logging = pending_audit(effective / "state.json")
     warnings: list[str] = []
     critical = False
+    if logging["pending_audit_entries"] or logging["pending_audit_dropped"]:
+        critical = critical or bool(logging["pending_audit_dropped"])
+        warnings.append(f"DEGRADED LOGGING: {logging['pending_audit_entries']} administrative audit "
+                        f"entries (revocations) are in force but not yet in the audit log"
+                        + (f"; {logging['pending_audit_dropped']} more could not even be queued"
+                           if logging["pending_audit_dropped"] else "")
+                        + ". They are written by the next request that can reach the log.")
     free_mb = usage.free / MB
     if free_mb < critical_free_mb:
         critical = True
@@ -65,6 +88,8 @@ def report(state_dir: Path, *, warn_free_mb: float = 512, critical_free_mb: floa
     return {
         "state_dir": str(effective),
         **sizes,
+        **logging,
+        "audit_logging": "degraded" if (logging["pending_audit_entries"] or logging["pending_audit_dropped"]) else "ok",
         "state_write_limit_bytes": MAX_WRITE_BYTES,
         "state_limit_used_percent": round(100 * sizes["state_file_bytes"] / MAX_WRITE_BYTES, 2),
         "volume_free_bytes": usage.free,

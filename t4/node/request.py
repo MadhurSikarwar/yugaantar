@@ -59,7 +59,9 @@ def _evaluate_rule(node: Node, record: dict, body: dict, signature: bytes, messa
                    now: float) -> tuple[str, bool]:
     """Return (rule ID, whether the signature was verified)."""
     current = record["list"]
-    if current is None or now - current["issued_at"] > record["T"]:
+    # Same boundary as list acceptance (``now - issued_at < T``) and the console's stale state:
+    # a list exactly T old is stale everywhere.
+    if current is None or now - current["issued_at"] >= record["T"]:
         return "NODE-STALE-LIST", False
     if now < record["clock_high"] - record["s"]:
         return "NODE-CLOCK-ROLLBACK", False

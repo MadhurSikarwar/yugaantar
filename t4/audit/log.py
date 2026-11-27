@@ -366,6 +366,7 @@ class AuditLog:
         self.signer = signer
         self.checkpoint_every = checkpoint_every
         self._clock = clock
+        self._needs_checkpoint = False
         self.log_path = self.directory / LOG_NAME
         self.checkpoint_path = self.directory / CHECKPOINT_NAME
         if signer is not None:
@@ -710,6 +711,7 @@ class AuditLog:
 
         ``full`` re-checks the whole chain regardless of size (used by ``head()``).
         """
+        self._needs_checkpoint = False
         for path in (self.checkpoint_path, self.log_path):
             _lines, partial = _tail(path, 1)
             if partial:
@@ -736,9 +738,18 @@ class AuditLog:
                             "removed_sha256": hashlib.sha256(partial).hexdigest(),
                         },
                     )
+        self._needs_checkpoint = False
         seq, head_hash = self._head_of_complete_log()
         if full or self._wants_whole_chain(seq):
-            return self._walk_whole_log()
+            seq, head_hash = self._walk_whole_log()
+        if self._needs_checkpoint and self.signer is not None and seq > 0:
+            # A scheduled checkpoint was lost (crash between entry and checkpoint). The whole
+            # chain was just re-hashed, so signing the current head restores a recent anchor
+            # and later appends go back to the bounded check.
+            newest = self._newest_checkpoint()
+            if newest is None or newest["seq"] < seq:
+                self._write_checkpoint(seq, head_hash)
+        self._needs_checkpoint = False
         return seq, head_hash
 
     def _wants_whole_chain(self, seq: int) -> bool:
@@ -833,11 +844,14 @@ class AuditLog:
         if newest is not None and newest["seq"] > parsed[-1]["seq"]:
             raise AuditIntegrityError("audit log is shorter than a signed checkpoint")
         if parsed[0]["seq"] > anchor_seq + 1:
-            # The window was not wide enough to reach the older anchor (or genesis).
-            # Should not happen with this instance's own checkpoint_every; fail closed
-            # rather than silently trusting an unverified gap if it ever does (for
-            # example checkpoint_every was lowered after the checkpoint was written).
-            raise AuditIntegrityError("cannot verify the log back to its last checkpoint")
+            # The window does not reach the older anchor. This happens after a crash between
+            # appending an entry and signing its scheduled checkpoint (a checkpoint is then
+            # missing), or if checkpoint_every was lowered. Never trust the unverified gap and
+            # never refuse forever: re-hash the WHOLE chain from genesis instead (the same check
+            # ``head()`` and ``verify-log`` use), and let the caller re-sign the missed checkpoint.
+            seq, head_hash = self._walk_whole_log()
+            self._needs_checkpoint = True
+            return seq, head_hash
         parsed = [entry for entry in parsed if entry["seq"] >= anchor_seq + 1]
         previous, seq = anchor_hash, anchor_seq
         for entry in parsed:

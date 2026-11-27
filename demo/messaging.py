@@ -17,8 +17,9 @@ The receiver verifies the signature, then the recipient and time window, then th
 What it does NOT give
     * Not forward secret: anyone who later obtains the recipient's long-term ML-KEM secret key can
       decrypt every message sent to it. A ratchet would be needed and is not built.
-    * ``ReplayGuard`` is in memory. A restarted receiver forgets its counters unless the caller
-      stores ``guard.snapshot()`` and restores it.
+    * ``ReplayGuard`` is in memory: a restarted receiver forgets its counters. ``FileReplayGuard``
+      keeps them in a file and commits each one atomically before a message is reported delivered,
+      so duplicates are refused across restarts and between concurrent receivers.
     * No delivery guarantees, no session resumption, no key distribution: public keys are passed in.
     * Side-channel behaviour of the native pqcrypto code is not established.
 """
@@ -96,8 +97,61 @@ class ReplayGuard:
     def accept(self, sender: str, seq: int) -> None:
         self.seen[sender] = seq
 
+    def commit(self, sender: str, seq: int) -> None:
+        """Check and accept in one step (what ``open_message`` calls after decryption)."""
+        self.check(sender, seq)
+        self.accept(sender, seq)
+
     def snapshot(self) -> dict[str, int]:
         return dict(self.seen)
+
+
+class FileReplayGuard:
+    """Restart-safe replay state: the receiver's counters live in one file.
+
+    ``commit`` takes an exclusive lock, re-reads the file, re-checks the sequence number and writes
+    the new counter atomically (temp file, fsync, replace, fsync of the folder) BEFORE it returns,
+    so ``open_message`` only reports a delivery once it is durable. Two receivers racing on the
+    same message (two processes, or a retry after a restart) cannot both deliver it: the second
+    sees the first's counter under the lock. A crash before the write leaves the old counter (the
+    message was not delivered and may be retried); a crash after it leaves the new one. The file is
+    not authenticated: whoever can write it can roll the counters back (same trust boundary as the
+    rest of the local state).
+    """
+
+    def __init__(self, path) -> None:
+        from pathlib import Path
+
+        self.path = Path(path)
+
+    def _load(self) -> dict[str, int]:
+        try:
+            data = json.loads(self.path.read_bytes())
+        except FileNotFoundError:
+            return {}
+        except (OSError, ValueError):
+            raise MessagingError("replay state is unreadable") from None
+        if not isinstance(data, dict) or not all(isinstance(k, str) and type(v) is int for k, v in data.items()):
+            raise MessagingError("replay state is unreadable")
+        return data
+
+    def check(self, sender: str, seq: int) -> None:
+        if seq <= self._load().get(sender, 0):
+            raise MessagingError("replayed or out-of-order message")
+
+    def commit(self, sender: str, seq: int) -> None:
+        from t4.node.state import atomic_write, file_lock
+
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with file_lock(self.path.with_name(self.path.name + ".lock")):
+            seen = self._load()
+            if seq <= seen.get(sender, 0):
+                raise MessagingError("replayed or out-of-order message")
+            seen[sender] = seq
+            atomic_write(self.path, json.dumps(seen, sort_keys=True).encode("ascii"))
+
+    def snapshot(self) -> dict[str, int]:
+        return dict(self._load())
 
 
 def seal(*, sender: str, sender_sig_secret: bytes, recipient: str, recipient_kem_public: bytes,
@@ -160,5 +214,5 @@ def open_message(message: dict, *, recipient: str, recipient_kem_secret: bytes, 
         text = chacha(_key(shared, sender, recipient)).decrypt(nonce, body, header_bytes).decode("utf-8")
     except Exception:
         raise MessagingError("decryption failed") from None
-    guard.accept(sender, seq)
+    guard.commit(sender, seq)  # durable before the text is handed over (FileReplayGuard)
     return text

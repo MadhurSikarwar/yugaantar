@@ -23,9 +23,22 @@ What it does
        threshold), ``routine_clock_offset`` (non-zero known offset) or
        ``routine``.
 
-    ``emitted_at`` is the collector receipt time of the event that triggers
-    the alert: the time a streaming detector reading events in receipt order
-    could have raised it.
+    Alert timing (three different things, never mixed up):
+
+    * ``emitted_at``: the collector receipt time of the event that triggers the
+      alert, i.e. the earliest time a streaming detector reading events in
+      receipt order could have raised it. ``initial_event_ids`` are the cited
+      events that had ARRIVED by then: an alert never claims to have been
+      raised before the evidence it cites at that time.
+    * ``evidence_complete_at``: when the last cited event arrived. Events in
+      ``event_ids`` but not in ``initial_event_ids`` are later updates to the
+      same alert, timestamped by their own arrival.
+    * Processing duration (the CLI's ``processing_ms``) is how long the batch
+      run took. Neither timestamp is a measured wall-clock emission: both are
+      reconstructed from receipt times (``TIMING_BASIS``).
+
+    Raw source time, corrected time and receipt time of every event are kept
+    unchanged on the ``Event``.
 
 What it defends against
     Unapproved privilege escalation, use of escalated privilege, and lateral
@@ -55,6 +68,7 @@ LABELS: tuple[str, ...] = (
     "routine_denial",
     "isolated_denial",
 )
+TIMING_BASIS = "reconstructed-from-receipt-times"
 SUSPICIOUS_LABELS: frozenset[str] = frozenset(
     {"unexpected_role_change", "review_after_role_change", "lateral_movement_candidate"}
 )
@@ -73,6 +87,10 @@ class Alert:
     emitted_at: str
     explanation: str
     order_uncertain: bool
+    # Cited events that had arrived by ``emitted_at`` (the evidence the alert was raised on).
+    initial_event_ids: tuple[str, ...] = ()
+    # Arrival of the last cited event; later than ``emitted_at`` when evidence arrived afterwards.
+    evidence_complete_at: str = ""
 
     def to_dict(self) -> dict:
         """JSON-ready form."""
@@ -86,6 +104,9 @@ class Alert:
             "emitted_at": self.emitted_at,
             "explanation": self.explanation,
             "order_uncertain": self.order_uncertain,
+            "initial_event_ids": list(self.initial_event_ids or self.event_ids),
+            "evidence_complete_at": self.evidence_complete_at or self.emitted_at,
+            "timing_basis": TIMING_BASIS,
         }
 
 
@@ -123,6 +144,12 @@ def _alert(rule: str, severity: str, trigger: Event, events: Sequence[Event],
         if event.target_service not in services:
             services.append(event.target_service)
     digest = hashlib.sha256("\x1f".join((rule,) + ids).encode("utf-8", "surrogatepass")).hexdigest()[:16]
+    # Raised once the trigger and every REQUIRED piece of evidence had arrived (out-of-order
+    # delivery can bring the trigger first). Cited events that arrive later are reported as later
+    # evidence with their own arrival time, never as if they were there at emission.
+    emitted = max(e.received_time for e in (trigger, *evidence))
+    initial = tuple(dict.fromkeys(e.event_id for e in ordered if e.received_time <= emitted))
+    complete = max(max(e.received_time for e in ordered), emitted)
     return Alert(
         alert_id=f"ALR-{digest}",
         rule=rule,
@@ -130,9 +157,11 @@ def _alert(rule: str, severity: str, trigger: Event, events: Sequence[Event],
         identity=trigger.actor,
         services=tuple(services),
         event_ids=ids,
-        emitted_at=iso_z(max(e.received_time for e in (trigger, *evidence))),
+        emitted_at=iso_z(emitted),
         explanation=explanation,
         order_uncertain=rules.pair_uncertain(ordered, cfg),
+        initial_event_ids=initial,
+        evidence_complete_at=iso_z(complete),
     )
 
 

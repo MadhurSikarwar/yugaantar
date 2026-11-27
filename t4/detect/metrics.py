@@ -77,7 +77,15 @@ def time_to_alert(events: Sequence[Event], truth: Mapping[str, str], alerts: Ite
     missed: list[str] = []
     for incident in incidents(events, truth):
         ids = {e.event_id for e in incident}
-        hits = [parse_utc(a.emitted_at) for a in alerts if ids & set(a.event_ids)]
+        hits = []
+        for a in alerts:
+            if not ids & set(a.event_ids):
+                continue
+            # An alert counts for this incident at ``emitted_at`` only if it already cited one of
+            # the incident's events then; otherwise from when that evidence arrived.
+            initial = set(a.initial_event_ids or a.event_ids)
+            when = a.emitted_at if ids & initial else (a.evidence_complete_at or a.emitted_at)
+            hits.append(parse_utc(when))
         if not hits:
             missed.append(incident[0].event_id)
             continue
@@ -90,6 +98,8 @@ def time_to_alert(events: Sequence[Event], truth: Mapping[str, str], alerts: Ite
         "median_s": statistics.median(delays) if delays else None,
         "max_s": max(delays) if delays else None,
         "delays_s": delays,
+        "basis": "event timeline reconstructed from receipt times (not wall-clock emission, "
+                 "not processing duration)",
     }
 
 

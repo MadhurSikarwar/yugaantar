@@ -77,8 +77,9 @@ def test_revoking_one_actor_leaves_others_alone():
 
 def test_decision_carries_the_epoch():
     state = provisioned()
+    before = state.epoch
     state.revoke("maya")
-    assert decide(state, "ravi", "notes", "r").epoch == 1
+    assert decide(state, "ravi", "notes", "r").epoch == before + 1 == state.epoch
 
 
 # --- vault state ---------------------------------------------------------------------------
@@ -86,7 +87,8 @@ def test_decision_carries_the_epoch():
 
 def test_initialize_starts_generation_one_with_no_revocations():
     state = provisioned()
-    assert (state.generation, state.epoch, state.revoked) == (1, 0, {})
+    # Every generation raises the epoch (so an older copy of the state file is detectable).
+    assert (state.generation, state.epoch, state.revoked) == (1, 1, {})
     assert state.is_provisioned
 
 
@@ -105,9 +107,10 @@ def test_contents_without_an_owner_are_unreadable():
 
 def test_revoke_is_idempotent_and_the_epoch_only_goes_up():
     state = provisioned()
-    assert state.revoke("maya") is True and state.epoch == 1
-    assert state.revoke("maya") is False and state.epoch == 1
-    assert state.revoke("ravi") is True and state.epoch == 2
+    start = state.epoch
+    assert state.revoke("maya") is True and state.epoch == start + 1
+    assert state.revoke("maya") is False and state.epoch == start + 1
+    assert state.revoke("ravi") is True and state.epoch == start + 2
 
 
 def test_revoking_an_unknown_actor_is_recorded():
@@ -120,10 +123,11 @@ def test_new_generation_clears_data_but_the_epoch_never_decreases():
     state = provisioned()
     state.revoke("maya")
     state.remember_request("r1", "allow", RULE_ALLOW_OWNER, 4)
+    before = state.epoch
     state.initialize({"x": "u"}, {"x": "b"}, ())
     assert state.generation == 2
     assert state.revoked == {} and state.requests == {}
-    assert state.epoch == 1
+    assert state.epoch == before + 1  # a new generation raises it; it never decreases
     assert state.owner_of("brief") is None
 
 
