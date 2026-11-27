@@ -20,7 +20,7 @@ A protected-file service for the lost-device case: an owner reads a file, access
 | `demo/run_demo.py` | The lost-device story in one command |
 | `frontend/` | Web console and landing page (React, TypeScript) |
 | `scripts/` | One-command checks, judging-worker simulator, dependency verification |
-| `docs/brief/` | Two-page project brief with the one-page threat model |
+| `docs/brief/brief.pdf` | The final two-page brief (same file as `yugaantar-two-page-brief.pdf`), including the one-page threat model |
 
 ## Setup
 
