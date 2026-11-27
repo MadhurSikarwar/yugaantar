@@ -167,8 +167,9 @@ class RevocationAndLists(Base):
         self.assert_rule(self.ask(self.maya, "file-a", NOW + 3), "NODE-ACTOR-REVOKED")
 
     def test_stale_node_denies_everyone(self):
-        self.assert_rule(self.ask(self.noor, "file-b", NOW + T), "NODE-ALLOW-OWNER")
-        self.assert_rule(self.ask(self.noor, "file-b", NOW + T + 0.5), "NODE-STALE-LIST")
+        # A list exactly T old is stale, the same boundary as list acceptance.
+        self.assert_rule(self.ask(self.noor, "file-b", NOW + T - 0.5), "NODE-ALLOW-OWNER")
+        self.assert_rule(self.ask(self.noor, "file-b", NOW + T), "NODE-STALE-LIST")
 
     def test_age_counts_from_issue_not_delivery(self):
         signed = self.authority.issue_list(NOW + 1)

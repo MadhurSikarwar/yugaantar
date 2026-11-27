@@ -197,6 +197,191 @@ def test_append_refuses_a_truncated_log(folder, log):
         log.entries()
 
 
+def _tamper_request_id(folder, old: str, new: str) -> None:
+    """Change one entry's content, in place, WITHOUT recomputing its stored hash --
+    the simplest possible non-tail tamper: no signing key, no rehashing."""
+    path = folder / LOG_NAME
+    data = path.read_bytes().replace(f'"{old}"'.encode(), f'"{new}"'.encode())
+    path.write_bytes(data)
+
+
+def _once(log, request_id="op-1", rule="KEY-ROTATE", **detail):
+    return log.append_once(actor="authority", action="rotate", target="phone", decision="allow",
+                           rule=rule, request_id=request_id, detail=detail)
+
+
+def test_append_once_logs_the_same_operation_a_single_time(folder, log):
+    first = _once(log, key_sha256="aa")
+    again = _once(log, key_sha256="aa")
+    assert again == first  # the existing entry is returned, nothing is appended
+    assert [e["request_id"] for e in log.entries()] == ["op-1"]
+
+
+def test_append_once_distinguishes_operations_and_rules(folder, log):
+    _once(log, "op-1")
+    _once(log, "op-2")                       # another operation: logged
+    _once(log, "op-1", rule="KEY-ENROLL")    # same id, different rule: logged
+    assert [(e["request_id"], e["rule"]) for e in log.entries()] == [
+        ("op-1", "KEY-ROTATE"), ("op-2", "KEY-ROTATE"), ("op-1", "KEY-ENROLL")]
+    assert log.verify().ok
+
+
+def test_append_once_is_not_fooled_by_the_id_appearing_elsewhere_in_an_entry(folder, log):
+    """Only the request_id field counts: the same text in another field does not suppress an entry."""
+    log.append(actor="op-1", action="x", target="op-1", decision="allow", rule="KEY-ROTATE",
+               request_id="other", detail={"note": "op-1"})
+    _once(log, "op-1")
+    assert [e["request_id"] for e in log.entries()] == ["other", "op-1"]
+
+
+def test_append_once_under_concurrency_writes_one_entry(folder, log):
+    import threading
+
+    errors = []
+
+    def worker():
+        try:
+            _once(AuditLog(folder, load_signer(folder), checkpoint_every=4))
+        except Exception as error:  # noqa: BLE001 - reported below
+            errors.append(error)
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert errors == []
+    assert [e["request_id"] for e in log.entries()] == ["op-1"]
+    assert log.verify().ok
+
+
+def test_append_once_never_rewrites_existing_history(folder, log):
+    for number in range(3):
+        add(log, f"r{number}")
+    before = log.entries()
+    _once(log)
+    assert log.entries()[:3] == before
+
+
+def test_append_catches_a_tamper_before_any_checkpoint_exists(folder, log):
+    """A non-tail tamper is caught on the very next append even with zero checkpoints
+    written yet (the window reaches genesis when the log is still this short)."""
+    for number in range(3):  # checkpoint_every=4: no checkpoint written yet
+        add(log, f"r{number}")
+    _tamper_request_id(folder, "r1", "zz1")
+    with pytest.raises(AuditIntegrityError):
+        add(log, "r9")
+
+
+def test_append_catches_a_tamper_since_the_second_newest_checkpoint(folder, log):
+    """A non-tail tamper within roughly the last two checkpoint intervals is caught on
+    the very next append -- this is the fix for the audit finding: previously only the
+    newest 1-2 entries were ever re-checked by a live append."""
+    for number in range(9):  # checkpoints at seq 4 and 8 (checkpoint_every=4)
+        add(log, f"r{number}")
+    _tamper_request_id(folder, "r4", "zz4")  # seq 5: just after the first checkpoint
+    with pytest.raises(AuditIntegrityError):
+        add(log, "r9")
+
+
+def test_append_catches_an_old_tamper_while_the_log_is_small(folder, log):
+    """Below FULL_CHECK_EVERY_APPEND_BYTES every append re-hashes the whole chain, so an edit
+    to an entry far older than the recent window is refused on the next append."""
+    for number in range(13):  # checkpoints at seq 4, 8 and 12; the recent window anchors at 8
+        add(log, f"r{number}")
+    _tamper_request_id(folder, "r0", "zz0")  # seq 1: well before the recent window
+    with pytest.raises(AuditIntegrityError):
+        add(log, "r13")
+
+
+def test_append_does_not_catch_an_older_tamper_on_a_large_log_but_verify_does(folder, log, monkeypatch):
+    """Honest limit, not a bug: once the log is larger than the full-check size caps, a live
+    append only re-checks the recent window, so an older edit is invisible to it. The size caps
+    are set to zero here to model a large log without writing megabytes; a full chain walk
+    (verify()/verify-log, explain, find, head()) still catches it."""
+    import t4.audit.log as audit_log
+
+    monkeypatch.setattr(audit_log, "FULL_CHECK_EVERY_APPEND_BYTES", 0)
+    monkeypatch.setattr(audit_log, "FULL_CHECK_AT_CHECKPOINT_BYTES", 0)
+    for number in range(13):
+        add(log, f"r{number}")
+    _tamper_request_id(folder, "r0", "zz0")  # seq 1: well before the recent window
+    add(log, "r13")  # does NOT raise: outside the live window and over the size caps
+    assert not log.verify().ok
+    with pytest.raises(AuditIntegrityError):
+        log.entries()
+
+
+def test_head_refuses_to_sign_over_edited_history_even_on_a_large_log(folder, log, monkeypatch):
+    """head() signs a checkpoint, which vouches for the whole chain: it re-checks all of it
+    regardless of the size caps, so it can never sign on top of an edited old entry."""
+    import t4.audit.log as audit_log
+
+    monkeypatch.setattr(audit_log, "FULL_CHECK_EVERY_APPEND_BYTES", 0)
+    monkeypatch.setattr(audit_log, "FULL_CHECK_AT_CHECKPOINT_BYTES", 0)
+    for number in range(13):
+        add(log, f"r{number}")
+    _tamper_request_id(folder, "r0", "zz0")
+    before = (folder / "checkpoints.jsonl").read_bytes()
+    with pytest.raises(AuditIntegrityError):
+        log.head()
+    assert (folder / "checkpoints.jsonl").read_bytes() == before  # nothing was signed
+
+
+def test_whole_chain_check_runs_once_per_checkpoint_interval_when_the_log_is_mid_sized(folder, monkeypatch):
+    """Between the two caps, a log that checkpoints rarely re-checks everything only on the
+    append that completes a checkpoint interval."""
+    import t4.audit.log as audit_log
+
+    monkeypatch.setattr(audit_log, "FULL_CHECK_EVERY_APPEND_BYTES", 0)
+    mid = AuditLog(folder, load_or_create_signer(folder), checkpoint_every=8)
+    for number in range(30):  # window = 2 * 8 + 2 = 18 lines, so seq 1 is far outside it
+        add(mid, f"r{number}")
+    _tamper_request_id(folder, "r0", "zz0")  # seq 1
+    add(mid, "a")  # becomes seq 31: 31 is not the last of an interval -> recent window only
+    with pytest.raises(AuditIntegrityError):
+        add(mid, "b")  # would be seq 32, which completes the interval: whole chain re-checked
+
+
+def test_key_files_are_written_through_exclusive_unique_temp_files(folder):
+    """A planted file or symlink at a guessable temp name cannot capture a signing key, and
+    a failed write leaves no temp file behind."""
+    import t4.audit.log as audit_log
+
+    folder.mkdir(parents=True)
+    (folder / "audit.key.tmp").write_bytes(b"planted")
+    for pid_name in (f"audit.key.{__import__('os').getpid()}.tmp",):
+        (folder / pid_name).write_bytes(b"planted")
+    audit_log._write_atomically(folder / "audit.key", b"K" * 8)
+    assert (folder / "audit.key").read_bytes() == b"K" * 8
+    assert (folder / "audit.key.tmp").read_bytes() == b"planted"  # untouched, never reused
+    leftovers = [p.name for p in folder.iterdir() if p.name.startswith(".audit.key.")]
+    assert leftovers == []
+
+
+def test_verify_reports_a_busy_log_instead_of_reading_it_unlocked(folder, log, monkeypatch):
+    """A lock timeout means a writer is active: verification must say so, not read torn data
+    and present it as a verdict. An unopenable lock file (read-only copy) still falls back."""
+    import t4.audit.verify as audit_verify
+    from t4.audit.log import AuditError
+
+    add(log)
+
+    def busy(directory, *a, **k):
+        raise AuditError("audit log is busy")
+
+    monkeypatch.setattr(audit_verify, "locked", busy)
+    report = audit_verify.verify_log(folder)
+    assert not report.ok and any("busy" in error for error in report.errors)
+
+    def readonly(directory, *a, **k):
+        raise PermissionError("read-only")
+
+    monkeypatch.setattr(audit_verify, "locked", readonly)
+    report = audit_verify.verify_log(folder)
+    assert report.ok and any("without the audit lock" in w for w in report.warnings)
+
+
 def test_fragment_is_kept_when_earlier_records_are_damaged(folder, log):
     add(log)
     add(log, "r2")

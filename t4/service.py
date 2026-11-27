@@ -11,13 +11,18 @@ Ordering guarantees
 
         read / protected_read:  decide -> (crypto) -> append audit entry ->
                                 update + commit state -> respond
-        revoke:                 update + commit state -> append audit entry
+        revoke:                 update state + queue its audit entry -> commit ->
+                                append audit entry (exactly once) -> drop it from the queue
         setup:                  append audit entry -> update + commit state
 
     * A read can never be answered unless its audit entry was written, so a
       failing audit log fails the read **closed**.
     * A revocation is made durable *first*: if the audit log fails afterwards,
       the actor is still revoked (revoking must never be blocked by logging).
+      Its audit entry is queued in the same atomic state write, so it is never
+      lost: the next request that can reach the log writes it (idempotently, by
+      a request ID fixed when the revocation was made), and the reply says
+      ``"audit": "pending"`` until then instead of claiming full completion.
     * Alerts are written after the decision entry and are best effort: a failed
       alert never turns a correct answer into an error.
 
@@ -37,7 +42,7 @@ import hashlib
 import json
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable
 
 from t4.api import (
@@ -60,6 +65,7 @@ from t4.validate_in import (
     SetupRequest,
 )
 
+SETUP_POLICY_ENV = "TRACK4_SETUP_POLICY"  # "once" refuses a second setup; anything else keeps the contract's reset
 RULE_SETUP = "ADM-SETUP"
 RULE_REVOKE = "ADM-REVOKE"
 RULE_CRYPTO_REJECTED_KEY = "CRY-KEY-REJECTED"
@@ -79,6 +85,22 @@ class Dependencies:
     audit_factory: Callable[[], AuditSink]
     kem_factory: Callable[[], KemProvider]
     proof_factory: Callable[[], ProofProvider]
+    # Told about a failure of the audit log itself (see t4.integrity_alert). Never raises.
+    on_audit_failure: Callable[[Exception], None] = lambda error: None
+
+
+class AuditHistoryLost(IntegrityError):
+    """The audit log ends before an entry that the saved state knows was written."""
+
+
+class StateRolledBack(IntegrityError):
+    """The saved state is older than what the audit log recorded (an earlier copy was restored)."""
+
+    category = "state-rollback"
+
+    def __init__(self, message: str, logged_epoch: int) -> None:
+        super().__init__(message)
+        self.logged_epoch = logged_epoch
 
 
 class VaultService:
@@ -92,6 +114,36 @@ class VaultService:
         if self._audit_cache is None:
             self._audit_cache = self._deps.audit_factory()
         return self._audit_cache
+
+    def _require_history(self, state: VaultState) -> None:
+        """Refuse to read from or add to a log that has lost entries.
+
+        Every number saved in ``state.audit_seq`` was returned by an append that had already
+        reached the disk, so an honest log can never be behind it. Checked BEFORE appending:
+        appending to a shortened log would let it grow back past the saved number.
+        """
+        last_seq = getattr(self._audit(), "last_seq", None)
+        if state.audit_seq and callable(last_seq) and last_seq() < state.audit_seq:
+            error = AuditHistoryLost("the audit log has lost entries the state recorded")
+            self._deps.on_audit_failure(error)
+            raise error
+
+    def _require_current_state(self, state: VaultState) -> None:
+        """Refuse to decide from saved state that is older than the audit log.
+
+        Every decision and revocation entry records the epoch the state had, and the epoch only
+        ever goes up (also across ``setup``). If the newest entries name a higher epoch than the
+        loaded state, the state file was replaced by an earlier copy, and revocations made since
+        would silently stop applying. That is treated like any other integrity failure: the request
+        fails closed and an alert is recorded. (Restoring the WHOLE folder, log included, still
+        passes; only a pin kept elsewhere exposes that. See the README.)
+        """
+        newest = getattr(self._audit(), "newest_value", None)
+        if not callable(newest):
+            return
+        logged = newest("epoch")
+        if logged is not None and logged > state.epoch:
+            raise StateRolledBack("the saved state is older than the audit log", logged)
 
     @staticmethod
     def _internal_id() -> str:
@@ -148,31 +200,69 @@ class VaultService:
     def setup(self, request: SetupRequest) -> dict:
         with self._deps.store.locked() as txn:
             state = VaultState.load(txn)
+            if state.is_provisioned and os.environ.get(SETUP_POLICY_ENV, "").strip().lower() == "once":
+                # Opt-in deployment guard. The official contract lets ``setup`` run again and start a
+                # new generation (open organizer question 6), so the default stays "reset". A
+                # deployment that must not be wiped by a stray or hostile ``setup`` sets
+                # TRACK4_SETUP_POLICY=once: the operator then resets by removing the state folder.
+                raise InputError("setup is locked: this state is already initialized")
             state.initialize(request.owners, request.contents, request.disabled)
-            self._audit().append(
-                actor=UNATTRIBUTED,
-                action="setup",
-                target="vault",
-                decision="ok",
-                rule=RULE_SETUP,
-                request_id=self._internal_id(),
-                detail={
+            try:
+                self._require_history(state)
+            except AuditHistoryLost:
+                self._note("Earlier audit history is missing; an alert was recorded.")
+            # A new generation continues from the highest epoch the log has seen, so the epoch keeps
+            # going up even if the state file was replaced by an older copy: ``setup`` is how an
+            # operator recovers from that (see ``_require_current_state``).
+            newest = getattr(self._audit(), "newest_value", None)
+            logged = newest("epoch") if callable(newest) else None
+            if logged is not None and logged >= state.epoch:
+                state.epoch = logged + 1  # strictly above anything already logged
+            # The history check starts again from the log as it is now (setup is also the recovery
+            # path); each entry written below moves it forward.
+            last_seq = getattr(self._audit(), "last_seq", None)
+            state.audit_seq = int(last_seq()) if callable(last_seq) else 0
+            # The setup entry is queued in the SAME atomic write as the new generation: if that
+            # write fails nothing changed (the previous state keeps serving and the log says
+            # nothing about a generation that never existed); if the log fails afterwards the
+            # entry stays queued and is written by the next request.
+            state.queue_audit({
+                "actor": UNATTRIBUTED,
+                "action": "setup",
+                "target": "vault",
+                "decision": "ok",
+                "rule": RULE_SETUP,
+                "request_id": self._internal_id(),
+                "detail": {
                     "generation": state.generation,
                     "epoch": state.epoch,
                     "assets": len(state.assets),
                     "disabled": len(state.disabled),
                 },
-            )
+            })
             state.save(txn)
-        return {"ready": True}
+            txn.commit()
+            logged_ok = True
+            try:
+                self._flush_pending(state, raise_errors=True)  # older queued entries first
+            except Exception as error:  # noqa: BLE001 - the new generation is already in force
+                logged_ok = False
+                if not isinstance(error, AuditHistoryLost):
+                    self._deps.on_audit_failure(error)
+                self._note("Setup is saved; its audit entry is pending and will be written later.")
+            state.save(txn)
+        return {"ready": True} if logged_ok else {"ready": True, "audit": "pending"}
 
     # -- read -------------------------------------------------------------
 
     def read(self, request: ReadRequest) -> dict:
         with self._deps.store.locked() as txn:
             state = VaultState.load(txn)
+            self._require_current_state(state)
             decision = decide(state, request.actor, request.asset, request.request_id)
             label = "allow" if decision.allow else "deny"
+            self._require_history(state)
+            self._flush_pending(state)
             entry = self._audit().append(
                 actor=request.actor,
                 action="read",
@@ -182,6 +272,7 @@ class VaultService:
                 request_id=request.request_id,
                 detail=self._decision_detail(state, decision),
             )
+            state.audit_seq = int(entry["seq"])
             alerts = self._update_after_decision(
                 state,
                 decision=decision,
@@ -204,26 +295,69 @@ class VaultService:
     def revoke(self, request: RevokeRequest) -> dict:
         with self._deps.store.locked() as txn:
             state = VaultState.load(txn)
+            # Before changing anything: a revocation written into an older copy of the state would
+            # raise its epoch back to the log's and hide that earlier revocations were lost.
+            self._require_current_state(state)
             newly_revoked = state.revoke(request.actor)
+            # The audit entry is queued in the SAME atomic write as the revocation, so neither can
+            # exist without the other: the revocation is in force now, and its record is written
+            # (exactly once) now or by a later request.
+            state.queue_audit({
+                "actor": request.actor,
+                "action": "revoke",
+                "target": request.actor,
+                "decision": "ok",
+                "rule": RULE_REVOKE,
+                "request_id": self._internal_id(),
+                "detail": {"generation": state.generation, "epoch": state.epoch,
+                           "newly_revoked": newly_revoked},
+            })
             state.save(txn)
             txn.commit()  # durable BEFORE logging
+            logged = False
             try:
-                self._audit().append(
-                    actor=request.actor,
-                    action="revoke",
-                    target=request.actor,
-                    decision="ok",
-                    rule=RULE_REVOKE,
-                    request_id=self._internal_id(),
-                    detail={
-                        "generation": state.generation,
-                        "epoch": state.epoch,
-                        "newly_revoked": newly_revoked,
-                    },
-                )
-            except Exception:  # noqa: BLE001 - the revocation already happened
-                self._note("The revocation was saved but its audit entry could not be written.")
-        return {}
+                self._require_history(state)
+                self._flush_pending(state, raise_errors=True)
+                logged = not state.pending_audit and not state.pending_dropped
+            except Exception as error:  # noqa: BLE001 - the revocation already happened
+                if not isinstance(error, AuditHistoryLost):  # already reported
+                    self._deps.on_audit_failure(error)
+                self._note("The revocation was saved; its audit entry is pending and will be written later.")
+            try:
+                state.save(txn)
+                txn.commit()
+            except Exception:  # noqa: BLE001 - only the queue bookkeeping failed; the entry stays queued
+                logged = False
+        # A JSON object as the contract asks. Never claim full completion while the record is missing.
+        return {} if logged else {"audit": "pending"}
+
+    def _flush_pending(self, state: VaultState, *, raise_errors: bool = False) -> bool:
+        """Write queued administrative audit entries, oldest first, each exactly once.
+
+        Idempotent: each entry carries the request ID fixed when it was queued, and is written with
+        ``append_once``, so a crash after the write but before the queue was saved cannot log it
+        twice. Returns True if the queue changed (the caller saves the state). Stops at the first
+        failure and keeps the rest queued. Never raises unless ``raise_errors``.
+        """
+        if not state.pending_audit:
+            return False
+        audit = self._audit()
+        write = getattr(audit, "append_once", None)
+        write = write if callable(write) else audit.append
+        changed = False
+        try:
+            while state.pending_audit:
+                entry = state.pending_audit[0]
+                written = write(**{key: entry[key] for key in ("actor", "action", "target", "decision",
+                                                              "rule", "request_id")}, detail=entry["detail"])
+                if isinstance(written, dict) and isinstance(written.get("seq"), int):
+                    state.audit_seq = max(state.audit_seq, written["seq"])
+                state.pending_audit.pop(0)
+                changed = True
+        except Exception:  # noqa: BLE001
+            if raise_errors:
+                raise
+        return changed
 
     # -- audit ------------------------------------------------------------
 
@@ -241,8 +375,13 @@ class VaultService:
         challenge_sha256 = hashlib.sha256(request.challenge.encode("utf-8")).hexdigest()
         with self._deps.store.locked() as txn:
             state = VaultState.load(txn)
+            self._require_current_state(state)
             decision = decide(state, request.actor, request.asset, request_id)
             detail = {**self._decision_detail(state, decision), "challenge_sha256": challenge_sha256}
+            self._require_history(state)
+            if self._flush_pending(state):
+                state.save(txn)
+                txn.commit()
 
             if not decision.allow:
                 entry = self._audit().append(
@@ -254,6 +393,7 @@ class VaultService:
                     request_id=request_id,
                     detail=detail,
                 )
+                state.audit_seq = int(entry["seq"])
                 alerts = self._update_after_decision(
                     state,
                     decision=decision,
@@ -271,6 +411,8 @@ class VaultService:
             # Authorized: only now touch the public key.
             body = state.body_of(request.asset) or ""
             try:
+                if request.public_key is None:
+                    raise ValueError("unusable public key")
                 ciphertext, shared_secret = self._deps.kem_factory().encapsulate(request.public_key)
                 proof = self._deps.proof_factory().make_proof(
                     shared_secret, request.challenge.encode("utf-8"), body.encode("utf-8")
@@ -287,7 +429,9 @@ class VaultService:
                 )
                 raise InputError("public key rejected") from None
             finally:
-                shared_secret = b""  # best effort: drop our reference to the secret
+                # This only drops our reference so the object can be collected. Python bytes cannot be
+                # erased in place, so it is NOT zeroization; see the README's limits section.
+                shared_secret = b""
 
             self._audit().append(
                 actor=request.actor,
@@ -349,6 +493,7 @@ class VaultService:
                 return
             with store.locked() as txn:
                 state = VaultState.load(txn)
+                self._require_history(state)
                 guard = Guard(state.guard)
                 alerts = guard.on_invalid_input(kind)
                 state.guard = guard.to_doc()
@@ -361,6 +506,10 @@ class VaultService:
     def report_integrity_failure(self, error: IntegrityError) -> None:
         """Record that stored state could not be trusted (state itself is not touched)."""
         alert = integrity_alert(error.category)
+        if isinstance(error, StateRolledBack):
+            # The alert keeps the epoch the log had reached, so a stream of refused requests (each
+            # adding an alert) can never push that epoch out of the log tail the check reads.
+            alert = replace(alert, detail={**alert.detail, "epoch": error.logged_epoch})
         try:
             self._emit_alerts([alert], actor=UNATTRIBUTED, target="vault", request_id=self._internal_id())
         except Exception:  # noqa: BLE001

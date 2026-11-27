@@ -22,7 +22,9 @@ What it defends against
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -30,6 +32,7 @@ from pathlib import Path
 from . import engine, metrics
 from .config import DEFAULT_CONFIG
 from .ingest import iso_z, load_approvals, load_events, load_labels
+from .policy_file import apply_policy_file
 
 
 def _paths(args: argparse.Namespace) -> tuple[Path, Path, Path | None]:
@@ -42,6 +45,37 @@ def _paths(args: argparse.Namespace) -> tuple[Path, Path, Path | None]:
     return events, approvals, labels
 
 
+def _config(args: argparse.Namespace):
+    """Default config, with the authorized approvers replaced when the operator names them.
+
+    Names come from ``--approver`` (repeatable) or the ``T4_APPROVERS`` environment variable
+    (comma separated). The change register is never used to name its own approvers.
+    """
+    names = list(getattr(args, "approver", None) or [])
+    if any(not str(n).strip() for n in names):
+        raise ValueError("--approver needs a non-empty name")
+    if not names:
+        names = [n.strip() for n in os.environ.get("T4_APPROVERS", "").split(",") if n.strip()]
+    base = DEFAULT_CONFIG
+    if getattr(args, "policy", None):
+        base = apply_policy_file(Path(args.policy), base)
+    if not names:
+        return base
+    return dataclasses.replace(base, authorized_approvers=frozenset(names))
+
+
+def _events(path: Path) -> list:
+    ignored: list[str] = []
+    events = load_events(path, redelivered=ignored)
+    if ignored:
+        print(f"note: ignored {len(ignored)} re-delivered event(s), first: {ignored[0]!r}", file=sys.stderr)
+    conflicted = [e.event_id for e in events if e.conflicting]
+    if conflicted:
+        print(f"note: {len(conflicted)} event ID(s) were reused with different content; the first record "
+              f"was analysed (see DET-CONFLICTING-DUPLICATE), first: {conflicted[0]!r}", file=sys.stderr)
+    return events
+
+
 def _dump(obj: object) -> None:
     print(json.dumps(obj, indent=2, sort_keys=True, allow_nan=False))
 
@@ -52,9 +86,9 @@ def _fmt(value: object) -> str:
 
 def cmd_detect(args: argparse.Namespace) -> int:
     events_path, approvals_path, _ = _paths(args)
-    events = load_events(events_path)
+    events = _events(events_path)
     started = time.perf_counter()
-    result = engine.analyze(events, load_approvals(approvals_path), DEFAULT_CONFIG)
+    result = engine.analyze(events, load_approvals(approvals_path), _config(args))
     elapsed_ms = (time.perf_counter() - started) * 1000
     if args.json:
         _dump({
@@ -70,6 +104,9 @@ def cmd_detect(args: argparse.Namespace) -> int:
         print(f"  identity: {alert.identity}   services: {', '.join(alert.services)}")
         print(f"  events:   {', '.join(alert.event_ids)}   emitted_at: {alert.emitted_at}"
               f"{'   ORDER UNCERTAIN' if alert.order_uncertain else ''}")
+        if alert.evidence_complete_at and alert.evidence_complete_at != alert.emitted_at:
+            later = [e for e in alert.event_ids if e not in alert.initial_event_ids]
+            print(f"  later evidence: {', '.join(later)} (complete at {alert.evidence_complete_at})")
         print(f"  why:      {alert.explanation}\n")
     if args.labels_out:
         for event in events:
@@ -82,9 +119,9 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
     events_path, approvals_path, labels_path = _paths(args)
     if labels_path is None:
         raise ValueError("give --labels or --dir")
-    events = load_events(events_path)
+    events = _events(events_path)
     started = time.perf_counter()
-    result = engine.analyze(events, load_approvals(approvals_path), DEFAULT_CONFIG)
+    result = engine.analyze(events, load_approvals(approvals_path), _config(args))
     elapsed_ms = (time.perf_counter() - started) * 1000
     truth = load_labels(labels_path)
     report = metrics.evaluate(events, result.predicted(), truth, result.alerts)
@@ -100,7 +137,8 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
         print(f"{label:<28} {row['support']:>7} {_fmt(row['precision']):>9} {_fmt(row['recall']):>7} {_fmt(row['f1']):>7}")
     tta = report["time_to_alert"]
     fa = report["false_alerts"]
-    print(f"\nincidents detected: {tta['detected']}/{tta['incidents']}   median time to alert: "
+    print(f"\nincidents detected: {tta['detected']}/{tta['incidents']}   median time to alert "
+          f"(event timeline reconstructed from receipt times; processing {elapsed_ms:.1f} ms): "
           f"{_fmt(tta['median_s'])} s   max: {_fmt(tta['max_s'])} s")
     print(f"alerts: {fa['alerts']}   false alerts: {fa['false_alerts']}   "
           f"per 1,000 benign events: {_fmt(fa['per_1000_benign'])} (benign events: {fa['benign_events']})")
@@ -114,8 +152,8 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
 
 def cmd_timeline(args: argparse.Namespace) -> int:
     events_path, approvals_path, _ = _paths(args)
-    events = load_events(events_path)
-    result = engine.analyze(events, load_approvals(approvals_path), DEFAULT_CONFIG)
+    events = _events(events_path)
+    result = engine.analyze(events, load_approvals(approvals_path), _config(args))
     ordered = sorted(events, key=lambda e: (e.corrected_time, e.receipt_index))
     rows = [{
         "event_id": e.event_id,
@@ -163,11 +201,14 @@ def cmd_export(args: argparse.Namespace) -> int:
         raise ValueError("give at least one --node NAME=DIR or --authority DIR")
     for name, path, kind in named_logs:
         pin = json.loads(Path(pins[name]).read_text(encoding="utf-8")) if name in pins else None
-        key = bytes.fromhex(pin["public_key"]) if pin and pin.get("public_key") else None
+        if pin is not None and not (isinstance(pin, dict) and isinstance(pin.get("public_key"), str)
+                                    and pin["public_key"]):
+            raise ValueError(f"the pin for {name} has no public key")
+        key = bytes.fromhex(pin["public_key"]) if pin is not None else None
         sources.append(exp.LogSource(Path(path), kind, name, pin, key))
     approvals = _load_approvals(Path(args.approvals)) if args.approvals else {}
     owners = json.loads(Path(args.owners).read_text(encoding="utf-8")) if args.owners else None
-    approvers = args.approver if args.approver else None
+    approvers = sorted(_config(args).authorized_approvers) if (args.approver or os.environ.get("T4_APPROVERS", "").strip()) else None
     try:
         result = exp.run_export(sources, approvals, owners=owners, approvers=approvers,
                                 alert_log=Path(args.append_alerts) if args.append_alerts else None)
@@ -181,6 +222,7 @@ def cmd_export(args: argparse.Namespace) -> int:
         "events": len(result.rows),
         "alerts": [a.to_dict() for a in result.result.alerts],
         "appended": result.appended,
+        "baseline_source": result.baseline_source,
     }
     if args.json:
         _dump(summary)
@@ -188,6 +230,10 @@ def cmd_export(args: argparse.Namespace) -> int:
     for v in result.verified:
         print(f"verified {v['kind']} log {v['log']}: {v['entries']} entries, ok "
               f"(covered to seq {v['covered_seq']}, head pinned: {v['head_pinned']}, key pinned: {v['key_pinned']})")
+    if result.baseline_source != "provisioning":
+        print("NOTE: no --owners given: the expected-access baseline was INFERRED from what each actor "
+              "was allowed to read in this window (not evidence quality). Pass --owners FILE for an "
+              "ownership-based baseline.")
     print(f"{len(result.rows)} events exported, {len(result.result.alerts)} alerts, "
           f"{len(result.appended)} newly appended to the audit log\n")
     for alert in result.result.alerts:
@@ -209,6 +255,9 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--dir", help="folder with events.csv, approvals.json (and labels.csv)")
         p.add_argument("--events")
         p.add_argument("--approvals")
+        p.add_argument("--approver", action="append",
+                       help="authorized approver (repeatable; default user-admin, or T4_APPROVERS)")
+        p.add_argument("--policy", help="JSON file with role_scope (see t4/detect/policy_file.py)")
         if name == "evaluate":
             p.add_argument("--labels")
         if name == "detect":

@@ -1,0 +1,165 @@
+{
+  "bomFormat": "CycloneDX-lite",
+  "components": [
+    {
+      "artifacts": [
+        {
+          "file": "pqcrypto-0.4.0-cp312-cp312-macosx_11_0_arm64.whl",
+          "published": "2026-01-25",
+          "sha256": "001d2b473bd64c1ff59ed3ef57ad5b4d351a2b75b589015a8385a6e29d44cb55"
+        },
+        {
+          "file": "pqcrypto-0.4.0-cp312-cp312-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl",
+          "published": "2026-01-25",
+          "sha256": "2e79f8d9148db5a83e8a842ad59402f3421a2cc678f2c3c43015b26f4b5cad93"
+        },
+        {
+          "file": "pqcrypto-0.4.0-cp312-cp312-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl",
+          "published": "2026-01-25",
+          "sha256": "280db9aa8e173b6756bf45a7eda042f02692c32e06ed47c57d6909026be17d48"
+        },
+        {
+          "file": "pqcrypto-0.4.0-cp312-cp312-musllinux_1_2_aarch64.whl",
+          "published": "2026-01-25",
+          "sha256": "61d5cad03791a892d9d1896fd268604a9912df1760e7fe70efe53fef7a3e31a4"
+        },
+        {
+          "file": "pqcrypto-0.4.0-cp312-cp312-musllinux_1_2_x86_64.whl",
+          "published": "2026-01-25",
+          "sha256": "7a6515e74bf05bbefc8e1a33a18c0c2e0494185675b6f8aaa8c931191272b565"
+        },
+        {
+          "file": "pqcrypto-0.4.0-cp312-cp312-win32.whl",
+          "published": "2026-01-25",
+          "sha256": "ab62730b19e1d810bd8adbac783b5e7b2a21db03da39e05e7e175242ff556189"
+        },
+        {
+          "file": "pqcrypto-0.4.0-cp312-cp312-win_amd64.whl",
+          "published": "2026-01-25",
+          "sha256": "8a5b74ddc4e257469b3ad44aa65e839eeb7da5c0fabc68a8e469507445e731cd"
+        }
+      ],
+      "name": "pqcrypto",
+      "notes": "Mandated by the official contract (the official toolkit contract: pqcrypto==0.4.0). CFFI bindings to PQClean 'clean' C code; the symbols used are PQCLEAN_MLKEM768_CLEAN_* and PQCLEAN_MLDSA65_CLEAN_* (read from the installed wrapper modules). Upstream PQClean was archived read-only on 2026-08-04 and is not maintained; the pqcrypto Python package itself published 1.0.0 on 2026-08-15. Not replaced: the contract fixes this version.",
+      "pinned_by": [
+        "requirements.txt"
+      ],
+      "purl": "pkg:pypi/pqcrypto@0.4.0",
+      "role": "runtime: ML-KEM-768 and ML-DSA-65 (the only cryptography beyond the standard library)",
+      "version": "0.4.0"
+    },
+    {
+      "artifacts": [
+        {
+          "file": "cffi-2.1.1-cp312-cp312-macosx_10_15_x86_64.whl",
+          "published": "2026-08-03",
+          "sha256": "c8c69575568085ba0b1b10c0249d779a214aea6f6522e949a0fc9fb0fcb449d0"
+        },
+        {
+          "file": "cffi-2.1.1-cp312-cp312-macosx_11_0_arm64.whl",
+          "published": "2026-08-03",
+          "sha256": "f81b3b8f3d4e343550fa4baa0e479bba9f2d29ce9c2e9b51d1ce1718d7442fcf"
+        },
+        {
+          "file": "cffi-2.1.1-cp312-cp312-manylinux1_i686.manylinux2014_i686.manylinux_2_17_i686.manylinux_2_5_i686.whl",
+          "published": "2026-08-03",
+          "sha256": "811bd1e21d32de12efca32393a0ab3f5133b54fce9bd44b8bd77ab07da14bf6a"
+        },
+        {
+          "file": "cffi-2.1.1-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.whl",
+          "published": "2026-08-03",
+          "sha256": "68e62fe11f30d5ca8289242866f0a5291402d8529ca2178ab8afc5c9694ae890"
+        },
+        {
+          "file": "cffi-2.1.1-cp312-cp312-manylinux2014_ppc64le.manylinux_2_17_ppc64le.whl",
+          "published": "2026-08-03",
+          "sha256": "4a7c934f7360e8cd64fe9efadcbd10c7c6364f531e432b9a4bf5ccbc9e0e8b50"
+        },
+        {
+          "file": "cffi-2.1.1-cp312-cp312-manylinux2014_s390x.manylinux_2_17_s390x.whl",
+          "published": "2026-08-03",
+          "sha256": "3143d81e29e1e20a9ce10901ec369012947876596f75a222235965f2b7ae832e"
+        },
+        {
+          "file": "cffi-2.1.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+          "published": "2026-08-03",
+          "sha256": "c1453022f490d2459a11819d83ad1d586e9ff65a12ac3e705ffebd46d3685dcf"
+        },
+        {
+          "file": "cffi-2.1.1-cp312-cp312-musllinux_1_2_aarch64.whl",
+          "published": "2026-08-03",
+          "sha256": "208f941bb9d18e768138677f0a6d2ce01f590df56043dda1df1535ac57c88517"
+        },
+        {
+          "file": "cffi-2.1.1-cp312-cp312-musllinux_1_2_x86_64.whl",
+          "published": "2026-08-03",
+          "sha256": "210019b6c7cf07f081b4c54635c8cf744377001350e29cc0f81c4377b4797735"
+        },
+        {
+          "file": "cffi-2.1.1-cp312-cp312-win32.whl",
+          "published": "2026-08-03",
+          "sha256": "046bfc24911b37851ee1b51aab8bffe713d89c68c6a057b09484ce9fd5f69b4e"
+        },
+        {
+          "file": "cffi-2.1.1-cp312-cp312-win_amd64.whl",
+          "published": "2026-08-03",
+          "sha256": "f53e442b08449d42821fa4a4fba000095af9f62742a500f978a9f557ec44339a"
+        },
+        {
+          "file": "cffi-2.1.1-cp312-cp312-win_arm64.whl",
+          "published": "2026-08-03",
+          "sha256": "7bde5e4cc5c10140859842b9d383af292b22639a4dffb725314baf45968cef80"
+        },
+        {
+          "file": "cffi-2.1.1.tar.gz",
+          "published": "2026-08-03",
+          "sha256": "dd31f52ea1086513bb9df30f8fcee9b8918323ae067a3d5b78bc826a000712be"
+        }
+      ],
+      "name": "cffi",
+      "notes": "Installed by pqcrypto; pinned in requirements.txt to the tested version.",
+      "pinned_by": [
+        "requirements.txt"
+      ],
+      "purl": "pkg:pypi/cffi@2.1.1",
+      "role": "runtime: dependency of pqcrypto",
+      "version": "2.1.1"
+    },
+    {
+      "artifacts": [
+        {
+          "file": "pycparser-3.12-py3-none-any.whl",
+          "published": "2026-10-22",
+          "sha256": "a076f3f489b39b43ed13563a1dafe42447445bec2e294154ec5c57fcdda4c85e"
+        },
+        {
+          "file": "pycparser-3.12.tar.gz",
+          "published": "2026-10-22",
+          "sha256": "f03387877eab82ce01bbdfd0ba7252ee55a90b1c708d5129e2ce915475cf1db6"
+        }
+      ],
+      "name": "pycparser",
+      "notes": "Installed by cffi; pinned in requirements.txt to the tested version.",
+      "pinned_by": [
+        "requirements.txt"
+      ],
+      "purl": "pkg:pypi/pycparser@3.12",
+      "role": "runtime: dependency of cffi",
+      "version": "3.12"
+    }
+  ],
+  "demo_only": [
+    {
+      "in_requirements": "requirements-demo.txt",
+      "name": "cryptography",
+      "note": "Never imported by the adapter or t4/. File hashes are not recorded here and scripts/verify_dependencies.py does not check this package.",
+      "used_by": "demo/messaging.py",
+      "version": "50.0.2"
+    }
+  ],
+  "generated": "2026-11-26",
+  "not_included": "pytest (development only), the frontend's npm packages (see frontend/package-lock.json after integration).",
+  "source": "Artifact hashes copied from PyPI's JSON API (https://pypi.org/pypi/<name>/<version>/json) on 2026-11-26; OSV.dev reported 0 advisories for each pinned version on the same day. Only wheels for CPython 3.12 and the sdist are listed.",
+  "specVersion": "informational",
+  "standard_library": "hmac, hashlib, secrets, os.urandom (HMAC-SHA256, SHA-256, random bytes); no other cryptographic library."
+}

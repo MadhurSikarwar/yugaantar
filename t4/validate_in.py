@@ -14,8 +14,12 @@ What it defends against
       so a hostile document cannot trigger a RecursionError).
     * Type confusion: every field of every operation has an exact type.
       Unknown extra fields are ignored and never acted on.
-    * Base64 games: ``public_key`` must be canonical standard Base64 that
-      decodes to exactly 1184 bytes (an ML-KEM-768 public key).
+    * Base64 games: ``public_key`` is usable only if it is canonical standard
+      Base64 that decodes to exactly 1184 bytes (an ML-KEM-768 public key). A
+      string that is not is passed on as ``None``, not rejected here: the
+      service decides permission first, so a caller who is not allowed gets the
+      ordinary deny, and only an authorized caller is told the key is bad. A
+      value that is not a string at all is malformed input.
 
 Deliberately NOT restricted
     Identifiers are opaque strings (contract). Any characters, including
@@ -78,7 +82,7 @@ class ProtectedReadRequest:
     actor: str
     asset: str
     challenge: str
-    public_key: bytes
+    public_key: bytes | None  # None: a string that is not a usable ML-KEM-768 public key
 
 
 @dataclass(frozen=True)
@@ -197,17 +201,15 @@ def _string_list(value: object) -> tuple[str, ...]:
     return tuple(dict.fromkeys(_identifier(item) for item in value))
 
 
-def _public_key(value: object) -> bytes:
+def _public_key(value: object) -> bytes | None:
     if not isinstance(value, str):
         raise InputError("public key must be a string")
     try:
         raw = base64.b64decode(value, validate=True)
     except (binascii.Error, ValueError):
-        raise InputError("public key is not valid Base64") from None
-    if base64.b64encode(raw).decode("ascii") != value:
-        raise InputError("public key is not canonical Base64")
-    if len(raw) != ML_KEM_768_PUBLIC_KEY_BYTES:
-        raise InputError("public key has the wrong length")
+        return None
+    if base64.b64encode(raw).decode("ascii") != value or len(raw) != ML_KEM_768_PUBLIC_KEY_BYTES:
+        return None
     return raw
 
 

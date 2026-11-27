@@ -15,6 +15,7 @@ import hmac
 import json
 import os
 import secrets
+import stat
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -26,6 +27,8 @@ KEY_NAME = "state.key"
 STATE_NAME = "state.json"
 LOCK_NAME = "state.lock"
 LOCK_TIMEOUT = 15.0
+MAX_STATE_BYTES = 64 * 1024 * 1024  # a larger file is refused when LOADING
+MAX_WRITE_BYTES = 48 * 1024 * 1024  # a larger state is refused when WRITING (headroom below the load limit)
 
 
 class IntegrityError(NodeError):
@@ -110,6 +113,23 @@ def atomic_write(path: Path, data: bytes) -> None:
             os.close(directory)
 
 
+def make_private(directory: Path) -> None:
+    """POSIX: tighten a directory we own to 0700 (an existing one may have been made 0755).
+
+    A directory owned by someone else is refused, not changed. On Windows, permissions are ACLs
+    inherited from the parent folder and are not changed here (see the README's limits).
+    """
+    if os.name != "posix":
+        return
+    info = os.lstat(directory)
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        raise IntegrityError("state path is not a real directory")
+    if info.st_uid != os.getuid():
+        raise IntegrityError("state directory belongs to another user")
+    if info.st_mode & 0o077:
+        os.chmod(directory, 0o700)
+
+
 def _tag(key: bytes, version: int, records: dict) -> str:
     message = b"t4-node-state-v1\0" + canonical({"version": version, "records": records})
     return hmac.new(key, message, hashlib.sha256).hexdigest()
@@ -139,6 +159,7 @@ class FileStore:
     def create(cls, directory: str | Path, records: dict) -> "FileStore":
         store = cls(directory)
         store.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        make_private(store.directory)
         with file_lock(store.directory / LOCK_NAME):
             if (store.directory / STATE_NAME).exists() or (store.directory / KEY_NAME).exists():
                 raise NodeError("state already exists in this directory")
@@ -155,6 +176,7 @@ class FileStore:
         ``write(records, on_key_ready)``.
         """
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        make_private(self.directory)
         with file_lock(self.directory / LOCK_NAME):
             try:
                 current = self._load(self._read_key())[1]
@@ -183,10 +205,16 @@ class FileStore:
 
     def _write(self, key: bytes, version: int, records: dict) -> None:
         document = {"version": version, "records": records, "tag": _tag(key, version, records)}
-        atomic_write(self.directory / STATE_NAME, canonical(document))
+        encoded = canonical(document)
+        if len(encoded) > MAX_WRITE_BYTES:
+            # Never write a state that could not be loaded back: keep the old, loadable one.
+            raise NodeError("state would exceed the size limit")
+        atomic_write(self.directory / STATE_NAME, encoded)
 
     def _load(self, key: bytes) -> tuple[int, dict]:
         try:
+            if (self.directory / STATE_NAME).stat().st_size > MAX_STATE_BYTES:
+                raise IntegrityError("state file too large")
             document = json.loads((self.directory / STATE_NAME).read_bytes())
             version, records, tag = document["version"], document["records"], document["tag"]
             valid = hmac.compare_digest(tag.encode("ascii"), _tag(key, version, records).encode("ascii"))

@@ -160,7 +160,7 @@ def main(argv: list[str] | None = None) -> int:
     except NodeError as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
-    except (OSError, ValueError, KeyError):
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
         print("error: could not read or write a required file", file=sys.stderr)
         return 1
     print(json.dumps(result))

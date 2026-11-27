@@ -20,7 +20,7 @@ from typing import Any, Mapping
 
 from t4.node.authority import LIST_FIELDS, LIST_TYPE
 from t4.node.common import (KeyLog, NodeError, Signer, b64d, b64e, canonical, check_int,
-                            check_text, check_time, open_envelope)
+                            check_text, check_time, open_envelope, require_record)
 from t4.node.state import FileStore
 
 RECORD = "node"
@@ -35,7 +35,8 @@ ALERT_TEXT = {
     "NODE-ACTOR-REVOKED": "A revoked actor tried to use this node.",
     "NODE-OWNER-MISMATCH": "A device tried to act as an actor who does not own it.",
     "NODE-REPLAY": "A previously used signed request was presented again.",
-    "NODE-CLOCK-ROLLBACK": "This node's clock is behind a time it has already seen.",
+    "NODE-NONCE-STORE-FULL": "The replay-nonce store is full; requests are refused until entries expire.",
+    "NODE-CLOCK-ROLLBACK":"This node's clock is behind a time it has already seen.",
 }
 
 
@@ -72,7 +73,7 @@ class Node:
     def owners(self) -> tuple[str, dict[str, str]]:
         """(node ID, {asset: owner}) as provisioned. No file contents."""
         with self.store.locked() as txn:
-            record = txn.get(RECORD)
+            record = require_record(txn.get(RECORD), "node")
         return record["node_id"], record["owners"]
 
     def record_event(self, *, actor: str, action: str, target: str, decision: str,
@@ -81,10 +82,14 @@ class Node:
         entry = self.log.append(actor=actor, action=action, target=target, decision=decision,
                                 rule=rule, request_id=request_id, detail=dict(detail))
         if rule in ALERT_TEXT:
+            # ``actor`` is what the request CLAIMED. The alert also names the device that signed
+            # it and whether that signature was checked, so an operator never mistakes the named
+            # (possibly framed) actor for the sender.
+            extra = {name: detail[name] for name in ("device_id", "signature_verified") if name in detail}
             self.log.alert(rule=rule, explanation=ALERT_TEXT[rule], actor=actor, target=target,
                            request_id=request_id, entries=[entry["seq"]],
                            request_ids=[request_id],
-                           detail={"node_id": detail.get("node_id", "")})
+                           detail={"node_id": detail.get("node_id", ""), "claimed_actor": actor, **extra})
 
     def accept_list(self, signed_list: Any, now: float) -> bool:
         """True if the list was stored. Never raises on bad input."""
@@ -93,10 +98,46 @@ class Node:
         except Exception:
             return False
 
+    def reconcile(self) -> int:
+        """Write list-delivery events that were accepted while the log failed. Returns how many."""
+        with self.store.locked() as txn:
+            record = require_record(txn.get(RECORD), "node")
+            written = self._flush(record)
+            if written:
+                txn.put(RECORD, record)
+        return written
+
+    def pending_events(self) -> int:
+        """How many accepted-list events are in force but not yet logged (degraded logging)."""
+        with self.store.locked() as txn:
+            return len(require_record(txn.get(RECORD), "node").get("pending_events", []))
+
+    def _flush(self, record: dict) -> int:
+        """Log queued events oldest first, each once (fixed request IDs + ``append_once``)."""
+        queue = record.get("pending_events", [])
+        write = getattr(self.log, "append_once", None)
+        written = 0
+        try:
+            while queue:
+                event = queue[0]
+                if callable(write):
+                    write(**event)
+                else:
+                    self.log.append(**event)
+                queue.pop(0)
+                written += 1
+        except Exception:  # noqa: BLE001 - the rest stays queued and visible
+            pass
+        if written:
+            record["pending_events"] = queue
+        return written
+
     def _accept(self, signed_list: Any, now: float) -> bool:
         check_time(now)
         with self.store.locked() as txn:
-            record = txn.get(RECORD)
+            record = require_record(txn.get(RECORD), "node")
+            if self._flush(record):
+                txn.put(RECORD, record)
             rule, seq = self._judge(record, signed_list, now)
             accepted = rule == "NODE-LIST-ACCEPTED"
             if accepted:
@@ -105,16 +146,20 @@ class Node:
                 for name in ("revoked_devices", "revoked_actors"):
                     record[name] = sorted(set(record[name]) | set(body[name]))
                 txn.put(RECORD, record)
+            event = {"actor": "courier", "action": "deliver_list", "target": record["node_id"],
+                     "decision": "accept" if accepted else "reject", "rule": rule,
+                     "request_id": secrets.token_hex(16),
+                     "detail": {"node_id": record["node_id"], "list_seq": seq}}
             try:
-                self.record_event(
-                    actor="courier", action="deliver_list", target=record["node_id"],
-                    decision="accept" if accepted else "reject", rule=rule,
-                    request_id=secrets.token_hex(16),
-                    detail={"node_id": record["node_id"], "list_seq": seq})
+                self.record_event(**event)
             except Exception:
-                # A valid newer list only tightens or refreshes state that the
-                # authority signed, so it is kept even if logging fails.
-                pass
+                # A valid newer list only tightens or refreshes state that the authority signed, so
+                # it is kept even if logging fails. Its record is queued in the same atomic write
+                # and written (once) by the next delivery or ``reconcile``. Rejections change no
+                # state and are not queued.
+                if accepted:
+                    record.setdefault("pending_events", []).append(event)
+                    txn.put(RECORD, record)
         return accepted
 
     def _judge(self, record: dict, signed_list: Any, now: float) -> tuple[str, int]:

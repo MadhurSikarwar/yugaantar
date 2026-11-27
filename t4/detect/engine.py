@@ -16,15 +16,29 @@ What it does
        unexpected service edges chained by actor and session across at least
        N services within W -> ``lateral_movement_candidate`` (alert
        ``DET-LATERAL-MOVEMENT``); any other denial -> ``isolated_denial``;
-       a lone allowed unexpected edge -> ``routine`` plus a low-severity
-       ``DET-UNEXPECTED-EDGE`` alert;
+       a lone allowed unexpected edge -> ``routine`` plus a
+       ``DET-UNEXPECTED-EDGE`` alert: high if the access had been revoked,
+       medium if its approval had ended, otherwise low;
     5. everything else -> ``routine_delayed_delivery`` (delay above the
        threshold), ``routine_clock_offset`` (non-zero known offset) or
        ``routine``.
 
-    ``emitted_at`` is the collector receipt time of the event that triggers
-    the alert: the time a streaming detector reading events in receipt order
-    could have raised it.
+    Alert timing (three different things, never mixed up):
+
+    * ``emitted_at``: the collector receipt time of the event that triggers the
+      alert, i.e. the earliest time a streaming detector reading events in
+      receipt order could have raised it. ``initial_event_ids`` are the cited
+      events that had ARRIVED by then: an alert never claims to have been
+      raised before the evidence it cites at that time.
+    * ``evidence_complete_at``: when the last cited event arrived. Events in
+      ``event_ids`` but not in ``initial_event_ids`` are later updates to the
+      same alert, timestamped by their own arrival.
+    * Processing duration (the CLI's ``processing_ms``) is how long the batch
+      run took. Neither timestamp is a measured wall-clock emission: both are
+      reconstructed from receipt times (``TIMING_BASIS``).
+
+    Raw source time, corrected time and receipt time of every event are kept
+    unchanged on the ``Event``.
 
 What it defends against
     Unapproved privilege escalation, use of escalated privilege, and lateral
@@ -41,7 +55,7 @@ from typing import Iterable, Mapping, Sequence
 
 from . import rules
 from .config import DEFAULT_CONFIG, DetectConfig
-from .ingest import Approval, Event, iso_z
+from .ingest import COLUMNS, Approval, Event, iso_z
 
 LABELS: tuple[str, ...] = (
     "routine",
@@ -54,6 +68,7 @@ LABELS: tuple[str, ...] = (
     "routine_denial",
     "isolated_denial",
 )
+TIMING_BASIS = "reconstructed-from-receipt-times"
 SUSPICIOUS_LABELS: frozenset[str] = frozenset(
     {"unexpected_role_change", "review_after_role_change", "lateral_movement_candidate"}
 )
@@ -72,6 +87,10 @@ class Alert:
     emitted_at: str
     explanation: str
     order_uncertain: bool
+    # Cited events that had arrived by ``emitted_at`` (the evidence the alert was raised on).
+    initial_event_ids: tuple[str, ...] = ()
+    # Arrival of the last cited event; later than ``emitted_at`` when evidence arrived afterwards.
+    evidence_complete_at: str = ""
 
     def to_dict(self) -> dict:
         """JSON-ready form."""
@@ -85,6 +104,9 @@ class Alert:
             "emitted_at": self.emitted_at,
             "explanation": self.explanation,
             "order_uncertain": self.order_uncertain,
+            "initial_event_ids": list(self.initial_event_ids or self.event_ids),
+            "evidence_complete_at": self.evidence_complete_at or self.emitted_at,
+            "timing_basis": TIMING_BASIS,
         }
 
 
@@ -112,14 +134,22 @@ class Result:
 
 
 def _alert(rule: str, severity: str, trigger: Event, events: Sequence[Event],
-           explanation: str, cfg: DetectConfig) -> Alert:
+           explanation: str, cfg: DetectConfig, evidence: Sequence[Event] = ()) -> Alert:
+    """``evidence`` are events the alert cannot be raised without: it is emitted no earlier than
+    the latest of their receipt times (out-of-order delivery can bring the trigger first)."""
     ordered = sorted(events, key=lambda e: (e.corrected_time, e.receipt_index))
-    ids = tuple(e.event_id for e in ordered)
+    ids = tuple(dict.fromkeys(e.event_id for e in ordered))
     services: list[str] = []
     for event in ordered:
         if event.target_service not in services:
             services.append(event.target_service)
-    digest = hashlib.sha256("\x1f".join((rule,) + ids).encode("utf-8")).hexdigest()[:16]
+    digest = hashlib.sha256("\x1f".join((rule,) + ids).encode("utf-8", "surrogatepass")).hexdigest()[:16]
+    # Raised once the trigger and every REQUIRED piece of evidence had arrived (out-of-order
+    # delivery can bring the trigger first). Cited events that arrive later are reported as later
+    # evidence with their own arrival time, never as if they were there at emission.
+    emitted = max(e.received_time for e in (trigger, *evidence))
+    initial = tuple(dict.fromkeys(e.event_id for e in ordered if e.received_time <= emitted))
+    complete = max(max(e.received_time for e in ordered), emitted)
     return Alert(
         alert_id=f"ALR-{digest}",
         rule=rule,
@@ -127,16 +157,35 @@ def _alert(rule: str, severity: str, trigger: Event, events: Sequence[Event],
         identity=trigger.actor,
         services=tuple(services),
         event_ids=ids,
-        emitted_at=iso_z(trigger.received_time),
+        emitted_at=iso_z(emitted),
         explanation=explanation,
         order_uncertain=rules.pair_uncertain(ordered, cfg),
+        initial_event_ids=initial,
+        evidence_complete_at=iso_z(complete),
     )
+
+
+def _conflict_explanation(event: Event) -> str:
+    def short(value: object) -> str:
+        text = repr(value)
+        return text if len(text) <= 80 else text[:77] + "..."
+
+    copies = []
+    for other in event.conflicting[:3]:
+        changed = [f"{name} {short(getattr(event, name))} -> {short(getattr(other, name))}"
+                   for name in COLUMNS if name != "received_time_utc"
+                   and getattr(event, name) != getattr(other, name)]
+        copies.append("; ".join(changed))
+    return (f"Event ID {event.event_id} arrived again with different content "
+            f"({event.conflict_count} differing version(s)). Only the first record, by {event.actor}, "
+            "was analysed by the other rules. Either version could be the false one: check the source. "
+            "Differences (first -> later): " + " | ".join(copies))
 
 
 @dataclass
 class _PendingReview:
     change: Event
-    remaining: int
+    remaining: int | None  # None: every follow-up
 
 
 def analyze(events: Iterable[Event], approvals: Mapping[str, Approval],
@@ -179,7 +228,7 @@ def analyze(events: Iterable[Event], approvals: Mapping[str, Approval],
                     cfg))
                 pending.append(_PendingReview(event, cfg.review_followups))
         else:
-            revoke = rules.match_revoke(event, approvals)
+            revoke = rules.match_revoke(event, approvals, cfg)
             if revoke is not None:
                 put(event, "approved_change", "DET-APPROVED-CHANGE",
                     f"{event.actor} {event.role_before} -> {event.role_after} follows {revoke.approval_id}")
@@ -187,17 +236,25 @@ def analyze(events: Iterable[Event], approvals: Mapping[str, Approval],
                 put(event, "routine", "DET-ROLE-DECREASE",
                     f"{event.actor} {event.role_before} -> {event.role_after} lowers privilege")
 
-    # Step 3: follow-up use of an unapproved role.
+    # Step 3: follow-up use of an unapproved role, until the actor's role changes again.
+    by_actor: dict[str, list[Event]] = {}
+    for event in events:
+        by_actor.setdefault(event.actor, []).append(event)
     for review in pending:
         change = review.change
+        after = (change.corrected_time, change.receipt_index)
+        later_changes = [(e.corrected_time, e.receipt_index) for e in by_actor[change.actor]
+                         if e.role_before != e.role_after and e.outcome in cfg.allow_outcomes
+                         and (e.corrected_time, e.receipt_index) > after]
+        until = min(later_changes) if later_changes else None
         followups = sorted(
-            (e for e in events
+            (e for e in by_actor[change.actor]
              if e.event_id not in labels
-             and e.actor == change.actor
              and (e.session_id == change.session_id or not cfg.review_same_session)
              and e.role_before == change.role_after
              and e.outcome in cfg.allow_outcomes
-             and (e.corrected_time, e.receipt_index) > (change.corrected_time, change.receipt_index)),
+             and (e.corrected_time, e.receipt_index) > after
+             and (until is None or (e.corrected_time, e.receipt_index) < until)),
             key=lambda e: (e.corrected_time, e.receipt_index),
         )
         for event in followups[: review.remaining]:
@@ -208,21 +265,40 @@ def analyze(events: Iterable[Event], approvals: Mapping[str, Approval],
                 "DET-REVIEW-AFTER-ROLE-CHANGE", "medium", event, [change, event],
                 f"{event.actor} used role {event.role_before} ({event.action} on {event.target_service}, "
                 f"{event.outcome}) after the unapproved change in {change.event_id}. Review this access.",
-                cfg))
+                cfg, evidence=[change]))
 
-    # Step 4: denials and service edges.
+    # Step 4: denials and service edges. The rules used from here on only ever look at approvals
+    # whose subject is the event's actor, so each event is checked against that subset (same
+    # results, same order) instead of every approval: this keeps the run close to linear.
+    by_subject: dict[str, dict[str, Approval]] = {}
+    for approval_id, approval in approvals.items():
+        by_subject.setdefault(approval.subject, {})[approval_id] = approval
+
+    def mine(event: Event) -> Mapping[str, Approval]:
+        return by_subject.get(event.actor, {})
+
     candidates: list[Event] = []
     for event in events:
         if event.event_id in labels:
             continue
-        revoke = rules.revocation_for_denial(event, approvals, cfg)
+        revoke = rules.revocation_for_denial(event, mine(event), cfg)
         if revoke is not None:
             put(event, "routine_denial", "DET-DENIAL-AFTER-REVOCATION",
                 f"{event.target_service} denied {event.actor} after {revoke.approval_id} revoked "
                 f"{revoke.role} at {iso_z(revoke.effective_at)}")
             continue
-        if rules.is_unexpected_edge(event, approvals, cfg):
+        ended = rules.ended_grant_for_denial(event, mine(event), cfg)
+        if ended is not None:
+            put(event, "routine_denial", "DET-DENIAL-AFTER-APPROVAL-ENDED",
+                f"{event.target_service} denied {event.actor} after {ended.approval_id} "
+                f"({ended.role}) ended at {iso_z(ended.valid_until)} (end exclusive)")
+            continue
+        if rules.is_unexpected_edge(event, mine(event), cfg):
             candidates.append(event)
+
+    # Roles we know something about: configured, named by an approval, or granted in this data.
+    known_roles = (set(cfg.role_scope) | set(cfg.role_rank) | {a.role for a in approvals.values()}
+                   | {e.role_after for e in events if e.role_after != e.role_before})
 
     lone: list[Event] = []
     for chain in rules.movement_chains(candidates, cfg):
@@ -253,14 +329,33 @@ def analyze(events: Iterable[Event], approvals: Mapping[str, Approval],
                 f"single denied edge {event.source_service}->{event.target_service}; one denial alone "
                 "is not a movement sequence")
         else:
-            put(event, "routine", "DET-UNEXPECTED-EDGE",
+            rule = "DET-UNEXPECTED-EDGE"
+            allowed = event.outcome in cfg.allow_outcomes
+            revoked = rules.covering_revocation(event, mine(event), cfg) if allowed else None
+            expired = rules.expired_grant(event, mine(event), cfg) if allowed and revoked is None else None
+            if revoked is not None:
+                severity = "high"
+                why = (f"after {revoked.approval_id} revoked {revoked.role} at "
+                       f"{iso_z(revoked.effective_at)}. The access should have been refused.")
+            elif expired is not None:
+                severity = "medium"
+                why = (f"after {expired.approval_id} ended at {iso_z(expired.valid_until)}. "
+                       "The access is no longer approved.")
+            else:
+                severity = "low"
+                why = (f"outside the expected scope of role {event.role_before}. "
+                       "Single edge: not a movement sequence.")
+                if event.role_before not in known_roles:
+                    rule = "DET-ROLE-NOT-CONFIGURED"
+                    why = (f"with role {event.role_before}, which has no access rules configured, so "
+                           "this access could not be judged. Add the role with --policy FILE.")
+            # The label is unchanged (the nine practice labels have none for these cases).
+            put(event, "routine", rule,
                 f"{event.outcome} edge {event.source_service}->{event.target_service} is outside the "
                 f"expected scope of {event.role_before}")
             alerts.append(_alert(
-                "DET-UNEXPECTED-EDGE", "low", event, [event],
-                f"{event.actor} reached {event.target_service} ({event.outcome}) outside the expected "
-                f"scope of role {event.role_before}. Single edge: not a movement sequence.",
-                cfg))
+                rule, severity, event, [event],
+                f"{event.actor} reached {event.target_service} ({event.outcome}) {why}", cfg))
 
     # Step 5: everything left is routine; explain delivery and clock effects.
     uncertain = rules.order_uncertain_ids(events, cfg)
@@ -281,6 +376,12 @@ def analyze(events: Iterable[Event], approvals: Mapping[str, Approval],
         else:
             put(event, "routine", "DET-ROUTINE",
                 f"{event.action} on {event.target_service} is within the expected scope of {event.role_before}")
+
+    for event in events:
+        if event.conflicting:
+            alerts.append(_alert(
+                "DET-CONFLICTING-DUPLICATE", "high", event, [event, *event.conflicting],
+                _conflict_explanation(event), cfg, evidence=event.conflicting))
 
     alerts.sort(key=lambda a: (a.emitted_at, a.alert_id))
     return Result(events=events, labels=labels, alerts=alerts, order_uncertain=uncertain)

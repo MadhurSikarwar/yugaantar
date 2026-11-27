@@ -201,7 +201,9 @@ class Backups(Base):
 
     def test_foreign_vault_backup_is_rejected(self):
         other = Vault.create(self.root / "keys2", self.root / "backups2", "authority")
-        other.backup(self.authority.store, "authority", 2.0)
+        # A separate authority: one authority cannot be backed up into two vaults.
+        foreign = Authority.create(self.root / "authority2", self.signer, MemoryLog())
+        other.backup(foreign.store, "authority", 2.0)
         shutil.copyfile(self.root / "backups2" / "backup-00000001.json",
                         self.root / "backups" / "backup-00000001.json")
         with self.assertRaises(BackupError):

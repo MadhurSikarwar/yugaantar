@@ -86,6 +86,13 @@ def open_log(directory: str | Path) -> KeyLog:
     return AuditLog(Path(directory), load_or_create_signer(directory), checkpoint_every=1)
 
 
+def require_record(record: Any, kind: str) -> dict:
+    """A directory that holds no record of this kind is the wrong directory, not an empty one."""
+    if record is None:
+        raise NodeError(f"not a {kind} directory")
+    return record
+
+
 def canonical(value: Any) -> bytes:
     """Sorted keys, no spaces, ASCII only, no NaN."""
     return json.dumps(value, sort_keys=True, separators=(",", ":"),
@@ -109,6 +116,10 @@ def check_text(value: Any) -> str:
     """Identifiers are opaque: any characters, non-empty, bounded length."""
     if not isinstance(value, str) or not 0 < len(value) <= MAX_TEXT:
         raise NodeError("invalid text field")
+    try:
+        value.encode("utf-8")  # a lone surrogate cannot be exported or hashed as UTF-8
+    except UnicodeEncodeError:
+        raise NodeError("invalid text field") from None
     return value
 
 

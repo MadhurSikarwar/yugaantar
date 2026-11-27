@@ -28,6 +28,7 @@ REQUEST_FIELDS = frozenset({"type", "node_id", "device_id", "key_version", "acto
                             "action", "asset", "nonce", "issued_at"})
 TEXT_FIELDS = ("node_id", "device_id", "actor", "action", "asset", "nonce")
 MAX_NONCE = 128
+MAX_NONCES = 50_000  # replay nonces kept inside the window; at the cap further requests are refused
 
 
 def sign_request(device_sk: bytes, fields: Mapping, *, signer: Signer | None = None) -> dict:
@@ -58,7 +59,9 @@ def _evaluate_rule(node: Node, record: dict, body: dict, signature: bytes, messa
                    now: float) -> tuple[str, bool]:
     """Return (rule ID, whether the signature was verified)."""
     current = record["list"]
-    if current is None or now - current["issued_at"] > record["T"]:
+    # Same boundary as list acceptance (``now - issued_at < T``) and the console's stale state:
+    # a list exactly T old is stale everywhere.
+    if current is None or now - current["issued_at"] >= record["T"]:
         return "NODE-STALE-LIST", False
     if now < record["clock_high"] - record["s"]:
         return "NODE-CLOCK-ROLLBACK", False
@@ -87,6 +90,9 @@ def _evaluate_rule(node: Node, record: dict, body: dict, signature: bytes, messa
         return "NODE-REPLAY", True
     # Used up even if permission is refused below.
     record["nonces"] = {k: v for k, v in record["nonces"].items() if v >= now}
+    if len(record["nonces"]) >= MAX_NONCES:
+        # Fail closed: forgetting a nonce would allow a replay, and the state must stay loadable.
+        return "NODE-NONCE-STORE-FULL", True
     record["nonces"][nonce] = body["issued_at"] + record["W"] + record["s"]
     if body["action"] != "read" or body["asset"] not in record["owners"]:
         return "NODE-NOT-PERMITTED", True

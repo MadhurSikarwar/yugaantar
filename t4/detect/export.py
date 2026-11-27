@@ -45,6 +45,7 @@ Limits
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -52,16 +53,29 @@ from typing import Iterable, Mapping, Sequence
 
 from . import engine
 from .config import DEFAULT_CONFIG, DetectConfig
-from .ingest import Approval, events_to_csv, parse_events
+from .ingest import MAX_FIELD_CHARS, Approval, events_to_csv, parse_events
 
 GRANT_ACTIONS = frozenset({"grant", "grant_read"})
 UNGRANT_ACTIONS = frozenset({"ungrant", "revoke_grant", "remove_grant"})
 NO_ROLE = "user"
 AUTHORITY_SERVICE = "authority"
 UNVERIFIED_ACTOR = "(unverified)"
+# One shared session for every request that did not prove its actor: the claimed device_id is
+# attacker-chosen, so grouping by it would let a prober avoid movement chaining by changing it.
+UNVERIFIED_SESSION = "(unverified)"
 # Key events other than grants are routine administration by the authority.
-ADMIN_ACTIONS = frozenset({"enroll", "rotate", "revoke_device", "revoke_actor"})
+ADMIN_ACTIONS = frozenset({"enroll", "rotate", "rotate_reschedule", "revoke_device", "revoke_actor"})
 LOG_SUBDIR = "log"
+# Node rules meaning "valid signature, but not sent by its signer to this node
+# at this time": attributing these to the signer would let anyone who captures
+# one request frame its signer.
+NOT_FROM_SIGNER_RULES = frozenset({"NODE-WRONG-NODE", "NODE-REPLAY", "NODE-EXPIRED",
+                                   "NODE-KEY-INACTIVE"})
+# The node checks `actor == device owner` only AFTER the wrong-node and revoked-device/actor
+# checks. A request denied at one of these rules (or at the owner check itself) proves the
+# signature, not that the claimed actor is the signer's owner, so the actor name must not be
+# attributed: a rogue enrolled device can name any victim.
+ACTOR_UNPROVEN_RULES = frozenset({"NODE-DEVICE-REVOKED", "NODE-ACTOR-REVOKED", "NODE-OWNER-MISMATCH"})
 
 
 class ExportError(Exception):
@@ -89,10 +103,33 @@ class Export:
     verified: list[dict] = field(default_factory=list)
     appended: list[str] = field(default_factory=list)
     request_ids: dict[str, str] = field(default_factory=dict)  # event_id -> request_id
+    # "provisioning": expected targets come from the supplied ownership context (evidence quality).
+    # "inferred": learned from what each actor was allowed to read in this window (weaker; labelled).
+    baseline_source: str = "inferred"
 
     def csv(self) -> str:
         """The exported events in the practice CSV format."""
         return events_to_csv(self.rows)
+
+
+def fit_field(value: str, limit: int = MAX_FIELD_CHARS) -> str:
+    """Make ``value`` fit the detector's field limit without losing distinctness.
+
+    Identifiers are opaque and may be up to 4 KiB, and the export adds
+    prefixes (``claimed:``, ``<node_id>/``), so a converted field can exceed
+    the limit. Over-long values become a readable prefix plus the SHA-256 of
+    the whole value: deterministic, so grouping still works, and two
+    different values never collapse into one.
+"""
+    if len(value) <= limit:
+        return value
+    digest = hashlib.sha256(value.encode("utf-8", "surrogatepass")).hexdigest()
+    suffix = f"…sha256:{digest}"
+    return value[: limit - len(suffix)] + suffix
+
+
+def _fit_row(row: dict) -> dict:
+    return {key: fit_field(value) if isinstance(value, str) else value for key, value in row.items()}
 
 
 def read_role(asset: str) -> str:
@@ -106,31 +143,109 @@ def log_directory(path: Path) -> Path:
     return path / LOG_SUBDIR if (path / LOG_SUBDIR / "audit.jsonl").exists() else path
 
 
-def verify_sources(sources: Sequence[LogSource]) -> list[dict]:
-    """Verify every log; raise ``ExportError`` naming the first that fails."""
+def _snapshot_log(directory: Path, target: Path) -> None:
+    """Copy one coherent snapshot of a log directory into ``target`` (a private folder).
+
+    The checkpoint file size, the public key and the log size are taken under the audit lock (when
+    it can be taken), and exactly those bytes are copied. Both files are append-only, so a writer
+    that keeps appending cannot change the copied prefix; a writer that REPLACES or truncates a
+    file between the size snapshot and the copy is caught because the copy is then shorter than
+    the snapshot (refused) or does not verify. Everything after this point reads only the copy, so
+    the entries that are converted are byte-for-byte the entries that were verified.
+    """
+    import shutil
+
+    from t4.audit.log import CHECKPOINT_NAME, LOG_NAME, PUBLIC_KEY_NAME, AuditError, locked
+
+    def sizes() -> dict[str, int]:
+        out = {}
+        for name in (LOG_NAME, CHECKPOINT_NAME, PUBLIC_KEY_NAME):
+            try:
+                out[name] = (directory / name).stat().st_size
+            except FileNotFoundError:
+                out[name] = -1
+        return out
+
+    try:
+        with locked(directory):
+            wanted = sizes()
+            _copy_prefixes(directory, target, wanted, shutil)
+    except AuditError:
+        raise ExportError("log is busy: try again") from None
+    except OSError:
+        # Read-only copy of a log (the lock file cannot be created): nothing writes to it.
+        wanted = sizes()
+        _copy_prefixes(directory, target, wanted, shutil)
+
+
+def _copy_prefixes(directory: Path, target: Path, wanted: Mapping[str, int], shutil) -> None:
+    target.mkdir(parents=True, exist_ok=True)
+    for name, size in wanted.items():
+        if size < 0:
+            continue
+        with (directory / name).open("rb") as src, (target / name).open("wb") as dst:
+            remaining = size
+            while remaining > 0:
+                chunk = src.read(min(1 << 20, remaining))
+                if not chunk:
+                    raise ExportError(f"{name} became shorter while it was being exported")
+                dst.write(chunk)
+                remaining -= len(chunk)
+
+
+@dataclass
+class _Snapshot:
+    source: LogSource
+    path: Path
+    report: object
+
+
+def verify_sources(sources: Sequence[LogSource], workdir: Path | None = None) -> list[dict]:
+    """Verify every log; raise ``ExportError`` naming the first that fails.
+
+    Kept for callers that only want the verdict. ``run_export`` uses ``_verified_snapshots`` so the
+    entries it converts are the exact bytes that were verified.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="t4-export-") as tmp:
+        return [_summary(s) for s in _verified_snapshots(sources, Path(tmp))]
+
+
+def _summary(snap: "_Snapshot") -> dict:
+    r = snap.report
+    return {"log": snap.source.name, "kind": snap.source.kind, "ok": r.ok, "entries": r.entries,
+            "covered_seq": r.covered_seq, "head_pinned": r.head_pinned, "key_pinned": r.key_pinned,
+            "verified": "snapshot"}
+
+
+def _verified_snapshots(sources: Sequence[LogSource], workdir: Path) -> list["_Snapshot"]:
     from t4.audit.verify import verify_log
 
-    reports = []
-    for source in sources:
-        report = verify_log(log_directory(source.directory), dict(source.pinned_head) if source.pinned_head else None,
+    snaps = []
+    for index, source in enumerate(sources):
+        copy = workdir / f"log-{index}"
+        _snapshot_log(log_directory(source.directory), copy)
+        report = verify_log(copy, dict(source.pinned_head) if source.pinned_head else None,
                             source.pinned_public_key)
-        summary = {"log": source.name, "kind": source.kind, "ok": report.ok, "entries": report.entries,
-                   "covered_seq": report.covered_seq, "head_pinned": report.head_pinned,
-                   "key_pinned": report.key_pinned}
-        reports.append(summary)
         if not report.ok:
             raise ExportError(f"log {source.name} failed verification at entry {report.first_bad_seq}: "
                               f"{'; '.join(report.errors[:3])}")
-    return reports
+        snaps.append(_Snapshot(source, copy, report))
+    return snaps
 
 
-def _read_entries(source: LogSource) -> list[dict]:
+def _read_entries(snap: "_Snapshot") -> list[dict]:
+    """Entries of the VERIFIED snapshot copy (never the live, mutable directory)."""
     from t4.audit.log import AuditError, AuditLog
 
     try:
-        return AuditLog(log_directory(source.directory), None).entries()
+        entries = AuditLog(snap.path, None).entries()
     except AuditError as exc:
-        raise ExportError(f"log {source.name} could not be read: {exc}") from None
+        raise ExportError(f"log {snap.source.name} could not be read: {exc}") from None
+    if len(entries) != snap.report.entries:
+        raise ExportError(f"log {snap.source.name}: verified and converted entries differ")
+    return entries
 
 
 def _detail(entry: Mapping, key: str, default: str = "") -> str:
@@ -181,7 +296,8 @@ def convert(node_logs: Mapping[str, Sequence[dict]], key_events: Sequence[dict],
             elif action in UNGRANT_ACTIONS:
                 rows.append({**base, "actor": subject, "action": "role_change",
                              "role_before": read_role(asset), "role_after": NO_ROLE})
-                grants.pop((subject, asset), None)
+                if base["outcome"] == "success":
+                    grants.pop((subject, asset), None)
             else:
                 rows.append({**base, "actor": entry["actor"], "action": action,
                              "role_before": NO_ROLE, "role_after": NO_ROLE, "approval_id": ""})
@@ -190,7 +306,16 @@ def convert(node_logs: Mapping[str, Sequence[dict]], key_events: Sequence[dict],
             asset = entry["target"]
             event_id = f"{node_id}#{entry['seq']}"
             device = _detail(entry, "device_id") or "no-device"
-            if entry.get("detail", {}).get("signature_verified") is True:
+            verified = entry.get("detail", {}).get("signature_verified") is True
+            if verified and (entry.get("rule") in NOT_FROM_SIGNER_RULES
+                             or entry.get("rule") in ACTOR_UNPROVEN_RULES):
+                # A genuine signature reused where or when its signer did not
+                # send it (captured and forwarded to another node, replayed,
+                # or delayed past the window). The node denied it; it proves
+                # nothing about the signer's own behaviour, so it must not
+                # make the signer look like they probed several nodes.
+                actor, source = UNVERIFIED_ACTOR, f"forwarded:{entry['actor']}"
+            elif verified:
                 actor, source = entry["actor"], f"device:{device}"
             else:
                 # The actor name is only a claim: never count it as that
@@ -204,9 +329,11 @@ def convert(node_logs: Mapping[str, Sequence[dict]], key_events: Sequence[dict],
                 "source_clock_offset_ms": 0, "actor": actor, "source_service": source,
                 "target_service": f"{node_id}/{asset}", "action": entry["action"],
                 "role_before": role, "role_after": role, "outcome": entry["decision"],
-                "approval_id": "", "session_id": device, "correlation_id": entry.get("request_id", ""),
+                "approval_id": "", "session_id": device if actor != UNVERIFIED_ACTOR else UNVERIFIED_SESSION,
+                "correlation_id": entry.get("request_id", ""),
             })
         request_ids[event_id] = entry.get("request_id", "")
+    rows = [_fit_row(row) for row in rows]
     return rows, request_ids
 
 
@@ -215,7 +342,7 @@ def baseline_from_owners(owners: Mapping[str, Mapping[str, str]]) -> dict[str, f
     out: dict[str, set[str]] = {}
     for node_id, assets in owners.items():
         for asset, owner in assets.items():
-            out.setdefault(owner, set()).add(f"{node_id}/{asset}")
+            out.setdefault(fit_field(owner), set()).add(fit_field(f"{node_id}/{asset}"))
     return {actor: frozenset(targets) for actor, targets in out.items()}
 
 
@@ -248,23 +375,32 @@ def run_export(sources: Sequence[LogSource], approvals: Mapping[str, Approval], 
                approvers: Iterable[str] | None = None,
                alert_log: Path | None = None,
                request_actions: Iterable[str] = ("read",)) -> Export:
-    """Verify, convert, detect and (optionally) append alerts to ``alert_log``."""
-    verified = verify_sources(sources)
+    """Verify, convert, detect and (optionally) append alerts to ``alert_log``.
+
+    Each log is copied once (a coherent snapshot), the copy is verified against the supplied pins,
+    and only the copy's entries are converted: no file is re-read after it was verified.
+    """
+    import tempfile
+
     node_logs: dict[str, list[dict]] = {}
     key_events: list[dict] = []
-    for source in sources:
-        entries = _read_entries(source)
-        if source.kind == "authority":
-            key_events.extend(entries)
-        elif source.kind == "node":
-            node_logs[source.name] = entries
-        else:
-            raise ExportError(f"unknown log kind {source.kind!r}")
+    with tempfile.TemporaryDirectory(prefix="t4-export-") as tmp:
+        snaps = _verified_snapshots(sources, Path(tmp))
+        verified = [_summary(s) for s in snaps]
+        for snap in snaps:
+            entries = _read_entries(snap)
+            if snap.source.kind == "authority":
+                key_events.extend(entries)
+            elif snap.source.kind == "node":
+                node_logs[snap.source.name] = entries
+            else:
+                raise ExportError(f"unknown log kind {snap.source.kind!r}")
     rows, request_ids = convert(node_logs, key_events, request_actions)
     baseline = baseline_from_owners(owners) if owners is not None else baseline_from_rows(rows)
     cfg = export_config(baseline, approvers)
     result = engine.analyze(parse_events(events_to_csv(rows)), approvals, cfg)
-    export = Export(rows=rows, result=result, config=cfg, verified=verified, request_ids=request_ids)
+    export = Export(rows=rows, result=result, config=cfg, verified=verified, request_ids=request_ids,
+                    baseline_source="provisioning" if owners is not None else "inferred")
     if alert_log is not None:
         export.appended = append_alerts(alert_log, result.alerts, request_ids)
     return export
@@ -294,6 +430,7 @@ def append_alerts(directory: Path, alerts: Sequence[engine.Alert], request_ids: 
                     "event_ids": json.dumps(list(alert.event_ids)),
                     "services": json.dumps(list(alert.services)),
                     "emitted_at": alert.emitted_at,
+                    "evidence_complete_at": alert.evidence_complete_at or alert.emitted_at,
                     "order_uncertain": alert.order_uncertain,
                     "source": "t4.detect.export",
                 },

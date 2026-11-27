@@ -15,7 +15,7 @@ from __future__ import annotations
 from typing import Mapping
 
 from t4.api import IntegrityError, Track4Error
-from t4.service import Dependencies, VaultService
+from t4.service import AuditHistoryLost, Dependencies, VaultService
 from t4.validate_in import (
     AuditRequest,
     ProtectedReadRequest,
@@ -49,7 +49,11 @@ def dispatch(request: Mapping, deps: Dependencies | None = None) -> dict:
 def record_failure(error: Exception, deps: Dependencies | None = None) -> None:
     """Best-effort alerting for a failed request. Never raises, never reads request data."""
     try:
-        service = VaultService(deps or build_default_dependencies())
+        dependencies = deps or build_default_dependencies()
+        dependencies.on_audit_failure(error)  # ignores anything that is not audit-log damage
+        service = VaultService(dependencies)
+        if isinstance(error, AuditHistoryLost):
+            return  # reported above; nothing may be added to the shortened log
         if isinstance(error, IntegrityError):
             service.report_integrity_failure(error)
         elif isinstance(error, Track4Error) and error.category == "invalid-input":

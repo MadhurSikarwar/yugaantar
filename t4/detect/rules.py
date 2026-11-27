@@ -59,8 +59,13 @@ class RuleResult:
     approval: Approval | None = None
 
 
-def _revocation_time(subject: str, role: str, approvals: Approvals) -> datetime | None:
-    """Earliest effective revocation of ``role`` for ``subject``, if any."""
+def _revocation_time(subject: str, role: str, approvals: Approvals,
+                     cfg: DetectConfig | None = None) -> datetime | None:
+    """Earliest effective revocation of ``role`` for ``subject``, if any.
+
+    With ``cfg`` the revocation must come from an authorized approver: an entry written by
+    anyone else must not explain away denials or cancel a grant.
+    """
     times = [
         a.effective_at
         for a in approvals.values()
@@ -69,6 +74,7 @@ def _revocation_time(subject: str, role: str, approvals: Approvals) -> datetime 
         and a.role == role
         and a.effective_at is not None
         and a.approved_by
+        and (cfg is None or a.approved_by in cfg.authorized_approvers)
     ]
     return min(times) if times else None
 
@@ -93,17 +99,35 @@ def check_approval_action(event: Event, approvals: Approvals, cfg: DetectConfig)
     )
 
 
+def _scope_covers(approval: Approval, event: Event, cfg: DetectConfig) -> bool:
+    """A scoped approval only covers changes aimed at a service in its scope.
+
+    A change recorded against the identity service (how our own logs record grants, with the
+    asset carried in the role name) is not narrowed by scope: the role match is the check.
+    """
+    return (not approval.scope or event.target_service == cfg.identity_service
+            or event.target_service in approval.scope)
+
+
 def match_grant(event: Event, approvals: Approvals, cfg: DetectConfig) -> RuleResult:
     """Find a grant approval covering a role increase, or explain why none does."""
     moment = event.corrected_time
     candidates = [
         a for a in approvals.values()
         if a.operation == "grant_role" and a.subject == event.actor and a.role == event.role_after
+        and _scope_covers(a, event, cfg)
     ]
     if event.approval_id:
         named = approvals.get(event.approval_id)
         if named is None:
             return RuleResult(False, f"approval_id {event.approval_id} does not exist")
+        if (named.operation == "grant_role" and named.subject == event.actor and named.role == event.role_after
+                and not _scope_covers(named, event, cfg)):
+            return RuleResult(
+                False,
+                f"{named.approval_id} is scoped to {', '.join(named.scope)}, not {event.target_service}",
+                named,
+            )
         if named not in candidates:
             return RuleResult(
                 False,
@@ -117,7 +141,8 @@ def match_grant(event: Event, approvals: Approvals, cfg: DetectConfig) -> RuleRe
     reasons = []
     for approval in candidates:
         if approval.approved_by not in cfg.authorized_approvers:
-            reasons.append(f"{approval.approval_id} approver {approval.approved_by} is not authorized")
+            reasons.append(f"{approval.approval_id} approver {approval.approved_by} is not authorized "
+                           "(authorized approvers are set with --approver)")
             continue
         if not approval.valid_at(moment):
             reasons.append(
@@ -127,7 +152,7 @@ def match_grant(event: Event, approvals: Approvals, cfg: DetectConfig) -> RuleRe
                 f"change happened at {iso_z(moment)}"
             )
             continue
-        revoked_at = _revocation_time(event.actor, approval.role, approvals)
+        revoked_at = _revocation_time(event.actor, approval.role, approvals, cfg)
         if revoked_at is not None and revoked_at <= moment:
             reasons.append(f"{approval.role} for {event.actor} was revoked at {iso_z(revoked_at)}")
             continue
@@ -140,11 +165,12 @@ def match_grant(event: Event, approvals: Approvals, cfg: DetectConfig) -> RuleRe
     return RuleResult(False, "; ".join(reasons))
 
 
-def match_revoke(event: Event, approvals: Approvals) -> Approval | None:
-    """A revoke approval that explains a role decrease, if one is effective."""
+def match_revoke(event: Event, approvals: Approvals, cfg: DetectConfig | None = None) -> Approval | None:
+    """A revoke approval that explains a role decrease, if one is effective and authorized."""
     for approval in approvals.values():
         if (
             approval.operation == "revoke_role"
+            and (cfg is None or approval.approved_by in cfg.authorized_approvers)
             and approval.subject == event.actor
             and approval.role == event.role_before
             and approval.effective_at is not None
@@ -157,7 +183,7 @@ def match_revoke(event: Event, approvals: Approvals) -> Approval | None:
 def reachable_services(actor: str, role: str, moment: datetime, approvals: Approvals, cfg: DetectConfig) -> set[str]:
     """Services ``actor`` holding ``role`` may reach at ``moment``."""
     services = set(cfg.scope_for(role)) | set(cfg.baseline.get(actor, frozenset()))
-    revoked_at = _revocation_time(actor, role, approvals)
+    revoked_at = _revocation_time(actor, role, approvals, cfg)
     for approval in approvals.values():
         if (
             approval.operation == "grant_role"
@@ -183,10 +209,45 @@ def revocation_for_denial(event: Event, approvals: Approvals, cfg: DetectConfig)
     """A revocation that explains this denial: effective before it, covering its target."""
     if event.outcome not in cfg.deny_outcomes:
         return None
+    return covering_revocation(event, approvals, cfg)
+
+
+def ended_grant_for_denial(event: Event, approvals: Approvals, cfg: DetectConfig) -> Approval | None:
+    """An authorized grant whose validity ended before this DENIAL and that covered its target.
+
+    The same reasoning as a denial after a revocation: access that ran out is refused, which is
+    the system working. The role the event reports does not have to match (after the grant ends the
+    subject is usually back to a lower role); the subject and the target must.
+    """
+    if event.outcome not in cfg.deny_outcomes:
+        return None
+    for approval in approvals.values():
+        if (approval.operation == "grant_role" and approval.subject == event.actor
+                and approval.approved_by in cfg.authorized_approvers
+                and approval.valid_until is not None and approval.valid_until <= event.corrected_time
+                and event.target_service in approval.scope):
+            return approval
+    return None
+
+
+def expired_grant(event: Event, approvals: Approvals, cfg: DetectConfig) -> Approval | None:
+    """An authorized grant that covered this target but had ended before the event."""
+    for approval in approvals.values():
+        if (approval.operation == "grant_role" and approval.subject == event.actor
+                and approval.role == event.role_before and approval.approved_by in cfg.authorized_approvers
+                and approval.valid_until is not None and approval.valid_until <= event.corrected_time
+                and event.target_service in approval.scope):
+            return approval
+    return None
+
+
+def covering_revocation(event: Event, approvals: Approvals, cfg: DetectConfig) -> Approval | None:
+    """An authorized revocation effective before the event and covering its target."""
     moment = event.corrected_time
     for approval in approvals.values():
         if (
             approval.operation != "revoke_role"
+            or approval.approved_by not in cfg.authorized_approvers
             or approval.subject != event.actor
             or approval.effective_at is None
             or approval.effective_at > moment
@@ -194,7 +255,8 @@ def revocation_for_denial(event: Event, approvals: Approvals, cfg: DetectConfig)
             continue
         covered = set(cfg.scope_for(approval.role))
         for grant in approvals.values():
-            if grant.operation == "grant_role" and grant.subject == event.actor and grant.role == approval.role:
+            if (grant.operation == "grant_role" and grant.subject == event.actor and grant.role == approval.role
+                    and grant.approved_by in cfg.authorized_approvers):
                 covered.update(grant.scope)
         if event.target_service in covered:
             return approval
