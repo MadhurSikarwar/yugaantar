@@ -33,11 +33,18 @@ class FlakyAudit:
     def __init__(self, real, fail_next=False):
         self.real, self.fail_next = real, fail_next
 
-    def append(self, **kwargs):
+    def _maybe_fail(self):
         if self.fail_next:
             self.fail_next = False
             raise OSError(errno.ENOSPC, "simulated: no space left on device")
+
+    def append(self, **kwargs):
+        self._maybe_fail()
         return self.real.append(**kwargs)
+
+    def append_once(self, **kwargs):  # a full disk fails every kind of write
+        self._maybe_fail()
+        return self.real.append_once(**kwargs)
 
     def __getattr__(self, name):
         return getattr(self.real, name)
@@ -92,9 +99,15 @@ class StorageFailures(unittest.TestCase):
 
     def test_a_revocation_is_durable_even_when_its_audit_entry_cannot_be_written(self):
         deps = self.with_flaky_audit()
-        self.assertEqual(dispatch({"op": "revoke", "actor": "maya"}, deps), {})
+        # In force at once; the reply says the audit entry is still pending (no false "done").
+        self.assertEqual(dispatch({"op": "revoke", "actor": "maya"}, deps), {"audit": "pending"})
+        self.assertFalse([e for e in self.audit_entries() if e["action"] == "revoke"])  # the gap is real...
         self.assertEqual(self.read("maya", "brief", "r2"), {"decision": "deny"})  # enforced from now on
-        self.assertFalse([e for e in self.audit_entries() if e["action"] == "revoke"])  # the gap is real
+        # ...and closed by the next request that reaches the log, exactly once.
+        self.assertEqual(len([e for e in self.audit_entries() if e["action"] == "revoke"]), 1)
+        self.read("maya", "brief", "r3")
+        self.assertEqual(len([e for e in self.audit_entries() if e["action"] == "revoke"]), 1)
+        self.assertTrue(AuditLog(self.dir / "audit", None).verify().ok)
 
     def test_storage_coming_back_lets_the_next_revocation_and_its_audit_entry_through(self):
         self.write_fails = 2

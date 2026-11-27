@@ -347,7 +347,7 @@ def test_single_state_rollback_fails_closed_and_setup_recovers(folder):
     log = (folder/'audit'/'audit.jsonl').read_text()
     assert '"category":"state-rollback"' in log and 'STO-INTEGRITY-FAILURE' in log
     alert = [json.loads(l) for l in log.splitlines() if '"category":"state-rollback"' in l][0]
-    assert alert['detail']['epoch'] == 1  # the alert keeps the epoch the log had reached
+    assert alert['detail']['epoch'] == 2  # the alert keeps the epoch the log had reached (setup 1, revoke 2)
     setup(folder)  # the operator's reset continues the epoch, so the service works again
     assert ok(folder,dict(op='read',actor='alice',asset='a',request_id='after-setup'))['decision']=='allow'
 

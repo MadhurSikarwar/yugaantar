@@ -75,7 +75,7 @@ Setup and the commands that reproduce these results are in the repository README
 <h1>One-page threat model</h1>
 
 <h2>Assets</h2>
-<p>File bodies (confidentiality). Owners, revocations and grants (integrity, and no rollback once acknowledged). Audit logs (tamper evidence). Signing and state keys (secrecy). Service availability for legitimate owners.</p>
+<p>File bodies (confidentiality against callers; stored unencrypted at rest, so the state folder's permissions protect them). Owners, revocations and grants (integrity, and no rollback once acknowledged). Audit logs (tamper evidence). Signing and state keys (secrecy). Service availability for legitimate owners.</p>
 
 <h2>Adversaries</h2>
 <ul>
@@ -115,7 +115,7 @@ Setup and the commands that reproduce these results are in the repository README
 <ul>
 <li><b>No caller authentication in the adapter.</b> Anyone can claim any actor.</li>
 <li>Whoever can write a directory can read its signing key and rebuild its log. A pin exposes this only up to the pinned entry. Entries after the newest checkpoint or pin can be cut unnoticed. A full rollback of a state directory (state and log together) is not detectable locally.</li>
-<li><b>Other limits:</b> about 700,000 revocations of new names (measured at 72 bytes each) fill the state store, after which new revocations fail. Audit logs grow without limit (5 to 25 KB per hostile 4 KiB read; node logs 7 to 14 KB per request). The running service re-checks the whole log on every write up to 256 KiB and on every 16th write up to 8 MiB. Older parts of larger logs need an operator's <code>verify-log</code>. The authority does not authenticate its operator, including for rotation. Backups are not encrypted, a restore loses newer enrolments and grants, and it depends on the current vault ledger. An accepted list may be missing from a node log if the write fails.</li>
+<li><b>Other limits:</b> about 700,000 revocations of new names (measured at 72 bytes each) fill the state store, after which new revocations fail. Audit logs grow without limit (5 to 25 KB per hostile 4 KiB read; node logs 7 to 14 KB per request). The running service re-checks the whole log on every write up to 256 KiB and on every 16th write up to 8 MiB. Older parts of larger logs need an operator's <code>verify-log</code>. The authority does not authenticate its operator, including for rotation. Backups are not encrypted, a restore loses newer enrolments and grants, and it depends on the current vault ledger. If a log write fails, revocations and accepted lists still take effect and their entries are queued and written later (reported as degraded logging).</li>
 <li>No transport encryption and no forward secrecy (goals 10 to 12 are not supported; goal 9 only in the demo layer). A reused <code>protected_read</code> challenge is accepted.</li>
 <li>The detector is measured only on synthetic data: 22 practice rows cannot establish accuracy, and the held-out set reflects our own assumptions. Linux was tested locally and in Docker, not on the organizer sandbox. A state folder we own is made private (0700). In a shared folder like /tmp, we use our own subfolder.</li>
 </ul>

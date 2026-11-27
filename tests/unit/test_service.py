@@ -116,7 +116,7 @@ def test_setup_and_revoke_are_logged(env):
     service, audit, *_ = env
     service.revoke(RevokeRequest("maya"))
     assert [e["action"] for e in audit.entries] == ["setup", "revoke"]
-    assert audit.entries[0]["detail"] == {"generation": 1, "epoch": 0, "assets": 2, "disabled": 1}
+    assert audit.entries[0]["detail"] == {"generation": 1, "epoch": 1, "assets": 2, "disabled": 1}
 
 
 def test_key_material_is_never_stored_logged_or_returned(state_dir):
@@ -148,18 +148,24 @@ def test_a_failing_audit_log_fails_a_read_closed_and_changes_no_state(env):
 def test_a_revocation_persists_even_if_the_audit_log_fails(env):
     service, audit, *_ = env
     audit.fail_when = lambda entry: entry["action"] == "revoke"
-    assert service.revoke(RevokeRequest("maya")) == {}
+    # In force at once, and the reply does not claim the audit entry was written.
+    assert service.revoke(RevokeRequest("maya")) == {"audit": "pending"}
+    assert audit.by_action("revoke") == []
     audit.fail_when = lambda entry: False
     assert read(service, "maya", "brief", "r1") == {"decision": "deny"}
+    # The next request that reaches the log writes the queued entry, exactly once.
+    read(service, "maya", "brief", "r2")
+    assert len(audit.by_action("revoke")) == 1
 
 
-def test_a_failing_audit_log_leaves_setup_unapplied(state_dir):
+def test_a_failing_audit_log_keeps_setup_in_force_and_queues_its_entry(state_dir):
     service, audit, _, store = make_service(state_dir)
     audit.fail_when = lambda entry: entry["action"] == "setup"
-    with pytest.raises(RuntimeError):
-        service.setup(setup_request())
+    assert service.setup(setup_request()) == {"ready": True, "audit": "pending"}
+    assert audit.by_action("setup") == []
     audit.fail_when = lambda entry: False
-    assert read(service, "maya", "brief", "r") == {"decision": "deny"}  # nothing was provisioned
+    assert read(service, "maya", "brief", "r") == {"decision": "allow", "body": "demo note"}
+    assert len(audit.by_action("setup")) == 1  # written by the next request, once
 
 
 def test_alert_failures_never_break_a_correct_answer(env):
@@ -262,7 +268,8 @@ def test_a_second_setup_starts_a_new_generation(env):
     assert read(service, "zed", "x", "r2") == {"decision": "allow", "body": "new"}
     assert service.audit(AuditRequest("old")) == {"error": "unknown_request"}  # index replaced
     assert [e["detail"]["generation"] for e in audit.by_action("setup")] == [1, 2]
-    assert audit.by_action("setup")[1]["detail"]["epoch"] == 1  # the epoch continued
+    first, second = (e["detail"]["epoch"] for e in audit.by_action("setup"))
+    assert second > first  # the epoch continued upwards across generations
 
 
 def test_the_request_index_is_bounded(state_dir, monkeypatch):

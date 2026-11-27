@@ -104,6 +104,9 @@ def cmd_detect(args: argparse.Namespace) -> int:
         print(f"  identity: {alert.identity}   services: {', '.join(alert.services)}")
         print(f"  events:   {', '.join(alert.event_ids)}   emitted_at: {alert.emitted_at}"
               f"{'   ORDER UNCERTAIN' if alert.order_uncertain else ''}")
+        if alert.evidence_complete_at and alert.evidence_complete_at != alert.emitted_at:
+            later = [e for e in alert.event_ids if e not in alert.initial_event_ids]
+            print(f"  later evidence: {', '.join(later)} (complete at {alert.evidence_complete_at})")
         print(f"  why:      {alert.explanation}\n")
     if args.labels_out:
         for event in events:
@@ -134,7 +137,8 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
         print(f"{label:<28} {row['support']:>7} {_fmt(row['precision']):>9} {_fmt(row['recall']):>7} {_fmt(row['f1']):>7}")
     tta = report["time_to_alert"]
     fa = report["false_alerts"]
-    print(f"\nincidents detected: {tta['detected']}/{tta['incidents']}   median time to alert: "
+    print(f"\nincidents detected: {tta['detected']}/{tta['incidents']}   median time to alert "
+          f"(event timeline reconstructed from receipt times; processing {elapsed_ms:.1f} ms): "
           f"{_fmt(tta['median_s'])} s   max: {_fmt(tta['max_s'])} s")
     print(f"alerts: {fa['alerts']}   false alerts: {fa['false_alerts']}   "
           f"per 1,000 benign events: {_fmt(fa['per_1000_benign'])} (benign events: {fa['benign_events']})")
@@ -218,6 +222,7 @@ def cmd_export(args: argparse.Namespace) -> int:
         "events": len(result.rows),
         "alerts": [a.to_dict() for a in result.result.alerts],
         "appended": result.appended,
+        "baseline_source": result.baseline_source,
     }
     if args.json:
         _dump(summary)
@@ -225,6 +230,10 @@ def cmd_export(args: argparse.Namespace) -> int:
     for v in result.verified:
         print(f"verified {v['kind']} log {v['log']}: {v['entries']} entries, ok "
               f"(covered to seq {v['covered_seq']}, head pinned: {v['head_pinned']}, key pinned: {v['key_pinned']})")
+    if result.baseline_source != "provisioning":
+        print("NOTE: no --owners given: the expected-access baseline was INFERRED from what each actor "
+              "was allowed to read in this window (not evidence quality). Pass --owners FILE for an "
+              "ownership-based baseline.")
     print(f"{len(result.rows)} events exported, {len(result.result.alerts)} alerts, "
           f"{len(result.appended)} newly appended to the audit log\n")
     for alert in result.result.alerts:

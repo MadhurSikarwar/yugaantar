@@ -13,6 +13,9 @@ Documents (names are fixed; see ``t4.store``)
                "revoked": {identifier_key(actor): epoch_when_revoked}}
     requests  {identifier_key(request_id): {"decision", "rule", "seq", "n"}}
     guard     counters owned by ``t4.guard`` (keyed by ``identifier_key``)
+    pending   {"audit": [...]} administrative audit entries that are already in force
+              (a revocation) but could not be written to the audit log yet. They are
+              written, exactly once, by the next request that can reach the log.
 
     Everything an unauthenticated caller can make grow is keyed by a fixed-size
     hash, so each record is small and constant in size no matter how long the
@@ -39,6 +42,10 @@ from dataclasses import dataclass, field
 from t4.api import Txn
 
 MAX_INDEX_ENTRIES = 10_000
+# Pending audit entries kept while the audit log cannot be written. A revocation is never
+# undone or refused because of this bound: past it, further entries are only counted
+# (``pending_dropped``) and reported as degraded logging, so the gap stays visible.
+MAX_PENDING_AUDIT = MAX_INDEX_ENTRIES
 
 
 def identifier_key(identifier: str) -> str:
@@ -66,6 +73,8 @@ class VaultState:
     revoked: dict[str, int] = field(default_factory=dict)
     requests: dict[str, dict] = field(default_factory=dict)
     guard: dict = field(default_factory=dict)
+    pending_audit: list = field(default_factory=list)
+    pending_dropped: int = 0
 
     # -- persistence ------------------------------------------------------
 
@@ -83,6 +92,8 @@ class VaultState:
             revoked=dict(actors.get("revoked", {})),
             requests=txn.get("requests") or {},
             guard=txn.get("guard") or {},
+            pending_audit=list((txn.get("pending") or {}).get("audit", [])),
+            pending_dropped=int((txn.get("pending") or {}).get("dropped", 0)),
         )
 
     def save(self, txn: Txn) -> None:
@@ -92,6 +103,7 @@ class VaultState:
         txn.put("actors", {"disabled": sorted(self.disabled), "revoked": self.revoked})
         txn.put("requests", self.requests)
         txn.put("guard", self.guard)
+        txn.put("pending", {"audit": self.pending_audit, "dropped": self.pending_dropped})
 
     @property
     def is_provisioned(self) -> bool:
@@ -118,6 +130,10 @@ class VaultState:
     def initialize(self, owners: dict[str, str], contents: dict[str, str], disabled: tuple[str, ...]) -> None:
         """Start a new generation from a ``setup`` request."""
         self.generation += 1
+        # The epoch is raised by every generation too (not only by revocations): an older copy of
+        # the state file put back after a later ``setup`` then names a lower epoch than the log
+        # and is refused (see ``VaultService._require_current_state``).
+        self.epoch += 1
         self.assets = {asset: {"owner": owner, "body": contents.get(asset, "")} for asset, owner in owners.items()}
         self.disabled = set(disabled)
         self.revoked = {}
@@ -132,6 +148,13 @@ class VaultState:
         self.epoch += 1
         self.revoked[key] = self.epoch
         return True
+
+    def queue_audit(self, entry: dict) -> None:
+        """Remember an administrative audit entry that must still be written (bounded)."""
+        if len(self.pending_audit) >= MAX_PENDING_AUDIT:
+            self.pending_dropped += 1
+            return
+        self.pending_audit.append(entry)
 
     def first_record(self, request_id: str) -> dict | None:
         record = self.requests.get(identifier_key(request_id))

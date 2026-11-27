@@ -15,6 +15,7 @@ import hmac
 import json
 import os
 import secrets
+import stat
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -112,6 +113,23 @@ def atomic_write(path: Path, data: bytes) -> None:
             os.close(directory)
 
 
+def make_private(directory: Path) -> None:
+    """POSIX: tighten a directory we own to 0700 (an existing one may have been made 0755).
+
+    A directory owned by someone else is refused, not changed. On Windows, permissions are ACLs
+    inherited from the parent folder and are not changed here (see the README's limits).
+    """
+    if os.name != "posix":
+        return
+    info = os.lstat(directory)
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        raise IntegrityError("state path is not a real directory")
+    if info.st_uid != os.getuid():
+        raise IntegrityError("state directory belongs to another user")
+    if info.st_mode & 0o077:
+        os.chmod(directory, 0o700)
+
+
 def _tag(key: bytes, version: int, records: dict) -> str:
     message = b"t4-node-state-v1\0" + canonical({"version": version, "records": records})
     return hmac.new(key, message, hashlib.sha256).hexdigest()
@@ -141,6 +159,7 @@ class FileStore:
     def create(cls, directory: str | Path, records: dict) -> "FileStore":
         store = cls(directory)
         store.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        make_private(store.directory)
         with file_lock(store.directory / LOCK_NAME):
             if (store.directory / STATE_NAME).exists() or (store.directory / KEY_NAME).exists():
                 raise NodeError("state already exists in this directory")
@@ -157,6 +176,7 @@ class FileStore:
         ``write(records, on_key_ready)``.
         """
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        make_private(self.directory)
         with file_lock(self.directory / LOCK_NAME):
             try:
                 current = self._load(self._read_key())[1]

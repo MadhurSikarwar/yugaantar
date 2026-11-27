@@ -91,7 +91,8 @@ def test_revoke_still_works_and_does_not_extend_a_shortened_log(state):
     read(state, "r1")
     (state / "audit" / "audit.jsonl").unlink()
     (state / "audit" / "checkpoints.jsonl").unlink(missing_ok=True)
-    assert call(state, {"op": "revoke", "actor": "maya"})[:2] == (0, {})
+    # In force, but the reply says the audit entry is still pending (the log lost history).
+    assert call(state, {"op": "revoke", "actor": "maya"})[:2] == (0, {"audit": "pending"})
     assert entries(state / "audit") == [] and alerts(state)
     code, reply, _ = read(state, "r2")
     assert reply is None or reply == {"decision": "deny"}

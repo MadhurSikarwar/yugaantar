@@ -35,6 +35,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 from t4.audit.log import (
@@ -167,8 +168,14 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "verify-log":
             pin = json.loads(Path(args.pin).read_text(encoding="utf-8")) if args.pin else None
             public_key = _pin_key(pin) if pin is not None else None
+            started = time.perf_counter()
             report = AuditLog(args.dir, None).verify(pin, public_key)
-            _emit(report.as_dict())
+            result = report.as_dict()
+            # What was checked and how long it took, so an operator can see the verified range.
+            result["checked_range"] = [1, report.entries] if report.entries else []
+            result["pinned_range"] = [1, report.covered_seq] if report.covered_seq else []
+            result["seconds"] = round(time.perf_counter() - started, 3)
+            _emit(result)
             return 0 if report.ok else 1
         if args.command == "pin":
             return _pin(args)

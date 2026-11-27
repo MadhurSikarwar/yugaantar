@@ -107,6 +107,14 @@ class Authority:
         write(actor="authority", action=action, target=target, decision="allow",
               rule=rule, request_id=request_id, detail=detail)
 
+    def _try_reconcile(self) -> None:
+        """Best effort: write queued key events; a log that still fails never blocks the caller."""
+        try:
+            if self._record().get("pending_events"):
+                self.reconcile()
+        except Exception:  # noqa: BLE001 - the events stay queued and visible via pending_events()
+            pass
+
     def _revoke_in_vault(self, record: dict, set_name: str, item: str, at: float) -> None:
         if record["vault"]:
             from t4.backup import Vault
@@ -182,13 +190,45 @@ class Authority:
             # Vault first: if it cannot record the new key, nothing is published, because a
             # later restore would silently make the replaced key current again.
             self._rotation_in_vault(record, device, entry)
-            self._event("rotate", device_id, "KEY-ROTATE",
-                        {"owner": device["owner"], "version": version,
-                         "activate_at": repr(activate_at),
-                         "key_sha256": hashlib.sha256(b64d(public_key)).hexdigest()},
-                        identity=[device_id, version, public_key])
+            detail = {"owner": device["owner"], "version": version,
+                      "activate_at": repr(activate_at),
+                      "key_sha256": hashlib.sha256(b64d(public_key)).hexdigest()}
+            logged = self._logged_rotation(device_id, version, public_key)
+            if logged is None or logged == repr(activate_at):
+                # The one logical rotation event (exactly once, also across retries).
+                self._event("rotate", device_id, "KEY-ROTATE", detail,
+                            identity=[device_id, version, public_key])
+            else:
+                # An earlier attempt logged this rotation with a cutoff that was never committed
+                # (interrupted after the audit entry, before the authority state was saved) and the
+                # device has since rescheduled. Signed history is never edited: the committed
+                # cutoff is recorded as an explicit, once-only reschedule entry that names the
+                # cutoff it replaces, so audit evidence and committed state agree.
+                self._event("rotate_reschedule", device_id, "KEY-ROTATE-RESCHEDULED",
+                            {**detail, "replaces_activate_at": logged},
+                            identity=[device_id, version, public_key, repr(activate_at)])
             txn.put(RECORD, record)
         return activate_at
+
+    def _logged_rotation(self, device_id: str, version: int, public_key: str) -> str | None:
+        """The ``activate_at`` the newest rotation entry for this key version records, if any.
+
+        Looks at the once-only rotation entry and any later reschedule entries for the same key.
+        A log without ``find`` (a test double) reports nothing.
+        """
+        find = getattr(self.log, "find", None)
+        if not callable(find):
+            return None
+        request_id = f"rotate-{hashlib.sha256(canonical([device_id, version, public_key])).hexdigest()[:32]}"
+        found = find(request_id=request_id)
+        if not found:
+            return None
+        newest = found[-1]["detail"].get("activate_at")
+        key_sha = hashlib.sha256(b64d(public_key)).hexdigest()
+        for entry in find(action="rotate_reschedule", target=device_id):
+            if entry["detail"].get("key_sha256") == key_sha and entry["detail"].get("version") == version:
+                newest = entry["detail"].get("activate_at")
+        return newest
 
     def revoke_device(self, device_id: str, now: float) -> float:
         """Returns the effective revocation time r."""
@@ -206,6 +246,10 @@ class Authority:
             record = require_record(txn.get(RECORD), "authority")
             at = record[set_name].get(item, max(now, record["last_issued_at"]))
             record[set_name][item] = at
+            # The key event is queued in the same atomic write as the revocation, so the revocation
+            # is in force at once and its record can never be lost: it is written below, or by the
+            # next authority operation that can reach the log (``reconcile``).
+            _queue_event(record, action, item, rule, {"effective_at": repr(at)}, [action, item, repr(at)])
             txn.put(RECORD, record)
             # Vault before the save: an extra removal there is safe, a missing one is not.
             # A revocation persists even if the vault or the log fails.
@@ -213,17 +257,42 @@ class Authority:
                 self._revoke_in_vault(record, set_name, item, at)
             except Exception as error:
                 failure = error
-        # Logged only after the revocation is saved. So the log never reports a revocation that
-        # is not in force, and a retry after a crash finds the same time and logs it once.
-        with self.store.locked():
-            try:
-                self._event(action, item, rule, {"effective_at": repr(at)},
-                            identity=[action, item, repr(at)])
-            except Exception as error:
-                failure = error
+        try:
+            self.reconcile()
+        except Exception as error:
+            failure = error
         if failure is not None:
-            raise NodeError("revoked, but recording it in the vault or log failed") from failure
+            raise NodeError("revoked, but recording it in the vault or log failed; the log entry "
+                            "is queued and will be written by the next authority operation") from failure
         return at
+
+    def pending_events(self) -> int:
+        """How many key events are in force but not yet in the log (degraded logging)."""
+        return len(self._record().get("pending_events", []))
+
+    def reconcile(self) -> int:
+        """Write queued key events to the log, oldest first, each exactly once. Returns how many.
+
+        Idempotent: each queued event carries the identity it was created with, and is written with
+        ``append_once``, so a crash between the write and the queue update cannot log it twice.
+        Raises if the log still cannot be written (the rest stays queued).
+        """
+        written = 0
+        with self.store.locked() as txn:
+            record = require_record(txn.get(RECORD), "authority")
+            queue = record.get("pending_events", [])
+            try:
+                while queue:
+                    event = queue[0]
+                    self._event(event["action"], event["target"], event["rule"], event["detail"],
+                                identity=event["identity"])
+                    queue.pop(0)
+                    written += 1
+            finally:
+                if written:
+                    record["pending_events"] = queue
+                    txn.put(RECORD, record)
+        return written
 
     # -- permission grants  ----------------------------------------
 
@@ -265,24 +334,28 @@ class Authority:
             key = grant_key(actor, asset)
             record["grants"].pop(key, None)
             grant_op = record.get("grant_counts", {}).get(key, 0)  # which grant is being removed
+            # Queued with the removal in one atomic write (see ``_revoke``).
+            _queue_event(record, "ungrant", asset, "PERM-REMOVE", {"subject": actor, "granted_by": granted_by},
+                         ["ungrant", actor, asset, grant_op])
             txn.put(RECORD, record)
-            for step in (lambda: self._revoke_in_vault(
-                             record, "removed_grants", key, max(now, record["last_issued_at"])),
-                         lambda: self._event("ungrant", asset, "PERM-REMOVE",
-                                             {"subject": actor, "granted_by": granted_by},
-                                             identity=["ungrant", actor, asset, grant_op])):
-                try:
-                    step()
-                except Exception as error:
-                    failure = error
+            try:
+                self._revoke_in_vault(record, "removed_grants", key, max(now, record["last_issued_at"]))
+            except Exception as error:
+                failure = error
+        try:
+            self.reconcile()
+        except Exception as error:
+            failure = error
         if failure is not None:
-            raise NodeError("removed, but recording it in the vault or log failed") from failure
+            raise NodeError("removed, but recording it in the vault or log failed; the log entry "
+                            "is queued and will be written by the next authority operation") from failure
 
     # -- signed lists -----------------------------------------------------
 
     def issue_list(self, now: float) -> dict[str, Any]:
         """Sign the current state. The new number is stored before it is returned."""
         check_time(now)
+        self._try_reconcile()
         with self.store.locked() as txn:
             record = require_record(txn.get(RECORD), "authority")
             # Time-based numbering keeps rising even after restoring an old backup.
@@ -297,6 +370,14 @@ class Authority:
             txn.put(RECORD, record)
             sk = b64d(record["sk"])
         return signed_envelope(self.signer, sk, body)
+
+
+def _queue_event(record: dict, action: str, target: str, rule: str, detail: dict, identity: list) -> None:
+    """Remember a key event that is in force and must still be logged (see ``Authority.reconcile``)."""
+    queue = record.setdefault("pending_events", [])
+    if not any(event["identity"] == identity for event in queue):
+        queue.append({"action": action, "target": target, "rule": rule, "detail": detail,
+                      "identity": identity})
 
 
 def issue_list(authority: Authority, now: float) -> dict[str, Any]:
