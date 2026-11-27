@@ -108,7 +108,12 @@ class Authority:
               rule=rule, request_id=request_id, detail=detail)
 
     def _try_reconcile(self) -> None:
-        """Best effort: write queued key events; a log that still fails never blocks the caller."""
+        """Best effort: write queued key events; a log that still fails never blocks the caller.
+
+        Called at the start of every authority operation that writes the log (enroll,
+        publish_rotation, grant, issue_list; revoke and ungrant call ``reconcile`` after their own
+        write), so queued events are written before newer ones, in order.
+        """
         try:
             if self._record().get("pending_events"):
                 self.reconcile()
@@ -137,6 +142,7 @@ class Authority:
         check_text(owner)
         check_public_key(public_key, getattr(self.signer, "PUBLIC_KEY_SIZE", None))
         check_time(now)
+        self._try_reconcile()
         with self.store.locked() as txn:
             record = require_record(txn.get(RECORD), "authority")
             if device_id in record["devices"] or device_id in record["revoked_devices"]:
@@ -165,6 +171,7 @@ class Authority:
         check_public_key(public_key, getattr(self.signer, "PUBLIC_KEY_SIZE", None))
         check_time(activate_at)
         check_time(now)
+        self._try_reconcile()
         with self.store.locked() as txn:
             record = require_record(txn.get(RECORD), "authority")
             device = record["devices"].get(device_id)
@@ -306,6 +313,7 @@ class Authority:
         check_time(now)
         if approval_id:
             check_text(approval_id)
+        self._try_reconcile()
         with self.store.locked() as txn:
             record = require_record(txn.get(RECORD), "authority")
             if actor in record["revoked_actors"]:

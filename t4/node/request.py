@@ -113,6 +113,11 @@ def _decide(node: Node, signed: Any, now: float) -> tuple[Decision, str | None]:
         check_time(now)
         with node.store.locked() as txn:
             record = txn.get(RECORD)
+            # Write list-delivery events queued while the log failed, oldest first, before this
+            # request's own entry. Best effort: ``_flush`` never raises, keeps what it cannot write
+            # and writes each event once (fixed request IDs), so a retry cannot duplicate it.
+            if isinstance(record, dict):
+                node._flush(record)
             verified = False
             try:
                 body, signature, message = _parse(signed)

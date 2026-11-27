@@ -155,7 +155,7 @@ class Node:
             except Exception:
                 # A valid newer list only tightens or refreshes state that the authority signed, so
                 # it is kept even if logging fails. Its record is queued in the same atomic write
-                # and written (once) by the next delivery or ``reconcile``. Rejections change no
+                # and written (once) by the next delivery, the next signed request or ``reconcile``. Rejections change no
                 # state and are not queued.
                 if accepted:
                     record.setdefault("pending_events", []).append(event)
