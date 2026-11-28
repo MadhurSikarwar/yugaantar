@@ -78,7 +78,7 @@ From the console's **Backend controls** you can reach every backend feature:
 | Messages | The optional demo layer: an encrypted, signed message, then the same message replayed |
 | Operator | Explain a request ID from every log, list alerts, pin every log, verify against the pins, run the detector on our own verified logs, health (`t4.consistency`, `t4.storage_status`), and editing a synthetic log on disk to show the edit being caught |
 
-Pins made in the console are kept in the bridge's memory, outside the log folders, and are lost when the bridge stops. The optional encrypted-messaging demo (`demo/messaging.py`) is there too: send a message, then see its replay refused (needs `requirements-demo.txt`). The bridge is **not an authentication layer**: anyone who can reach its port can act as any actor. It listens on 127.0.0.1 only; run it on a developer machine, never on a shared host.
+Pins made in the console are saved as files in the workspace's `pins` folder, outside every log folder, in the same format as `audit.cli head --out`; copy them somewhere else to keep them. The console's Overview also lists the grants and the alerts recorded in the logs. The optional encrypted-messaging demo (`demo/messaging.py`) is there too: send a message, then see its replay refused (needs `requirements-demo.txt`). The bridge is **not an authentication layer**: anyone who can reach its port can act as any actor. It listens on 127.0.0.1 only; run it on a developer machine, never on a shared host.
 
 Without a backend the console loads nothing by default. You can load a clearly labelled synthetic sample or import a JSON snapshot. Imported results are shown as reported claims; importing verifies nothing. Files stay in browser memory (limit 5 MB and 5,000 entries per collection). Do not import secrets.
 
@@ -92,6 +92,8 @@ Without a backend the console loads nothing by default. You can load a clearly l
 | `nodes` | `id`, `state`: `current`, `stale` or `offline`, `listVersion`, `deviceIds`, `lastUpdated` |
 | `audit` | `requestId`, `actor`, `action`, `asset`, `rule`, `timestamp`, `decision`: `allow` or `deny` |
 | `verifications` | `id`, `detail`, `kind`: `audit-chain`, `checkpoint`, `device-signature` or `protected-read`; `outcome`: `valid`, `invalid` or `not-checked` |
+| `grants` (optional) | `actor`, `asset`, and `approvalId` when an approval is on record |
+| `alerts` (optional) | `id`, `timestamp`, `rule`, `source` (the log), `identity`, `detail` |
 
 ## Verify
 

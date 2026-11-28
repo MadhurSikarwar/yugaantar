@@ -114,7 +114,6 @@ class Workspace:
         self.offset = 0.0
         self.offline: set[str] = set()
         self.checks: list[dict] = []
-        self.pins: dict[str, dict] = {}
         self.approvals: dict[str, dict] = {}
         self.message_keys: dict[str, tuple] = {}
         self.message_seq: dict[str, int] = {}
@@ -140,7 +139,7 @@ class Workspace:
             for child in self.base.iterdir():
                 shutil.rmtree(child, ignore_errors=True) if child.is_dir() else child.unlink()
             self.offset, self.offline, self.checks = 0.0, set(), []
-            self.pins, self.approvals = {}, {}
+            self.approvals = {}
             self.message_keys, self.message_seq = {}, {}
             self.started_at = time.time()
             self.state = self.base / "adapter-state"
@@ -411,8 +410,19 @@ class Workspace:
         dirs.update({node_id: logs / node_id for node_id in NODES})
         return dirs
 
+    @property
+    def pins_dir(self) -> Path:
+        """Where pins are kept: inside the workspace, outside every log folder."""
+        return self.base / "pins"
+
+    def _pin_of(self, name: str) -> dict | None:
+        try:
+            return json.loads((self.pins_dir / f"{name}.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+
     def _pin_args(self, name: str) -> tuple[dict | None, bytes | None]:
-        pin = self.pins.get(name)
+        pin = self._pin_of(name)
         return pin, (bytes.fromhex(pin["public_key"]) if pin else None)
 
     @staticmethod
@@ -469,11 +479,16 @@ class Workspace:
                 rows.append({"log": name, "pinned": "no", "why": "the log does not verify, so it was not pinned"})
                 continue
             head = AuditLog(directory, load_signer(directory)).head()
-            self.pins[name] = dict(head, public_key=read_bytes(directory / "audit.pub").hex())
+            from t4.node.state import atomic_write
+
+            self.pins_dir.mkdir(mode=0o700, exist_ok=True)
+            pin = dict(head, public_key=read_bytes(directory / "audit.pub").hex())
+            atomic_write(self.pins_dir / f"{name}.json", json.dumps(pin, sort_keys=True).encode("ascii"))
             rows.append({"log": name, "pinned": "yes", "seq": head["seq"], "hash": head["hash"][:16] + "…",
                          "why": ""})
         done = sum(1 for row in rows if row["pinned"] == "yes")
-        return {"summary": f"Pinned {done} of {len(rows)} logs. The bridge keeps the pins, outside the log folders.",
+        return {"summary": f"Pinned {done} of {len(rows)} logs. Pin files are in the workspace's pins folder, "
+                           "outside the log folders (same format as 'audit.cli head --out').",
                 "rows": rows}
 
     def verify(self, body: dict) -> dict:
@@ -484,7 +499,7 @@ class Workspace:
         for name, directory in self._log_dirs().items():
             report = verify_log(directory, *self._pin_args(name))
             rows.append({"log": name, "result": "ok" if report.ok else "FAILED", "entries": report.entries,
-                         "signed_to": report.covered_seq, "pinned": "yes" if name in self.pins else "no",
+                         "signed_to": report.covered_seq, "pinned": "yes" if self._pin_of(name) else "no",
                          "first_bad_entry": report.first_bad_seq if report.first_bad_seq is not None else "",
                          "why": (report.errors[0] if report.errors else "")[:300]})
         bad = [row["log"] for row in rows if row["result"] != "ok"]
@@ -671,7 +686,7 @@ class Workspace:
                                           "action": f"{entry['action']} @ {name}" if is_node else entry["action"],
                                           "asset": entry["target"] or "(none)",
                                           "decision": entry["decision"], "rule": entry["rule"]})
-                pin = self.pins.get(name)
+                pin = self._pin_of(name)
                 report = verify_log(directory, pin, bytes.fromhex(pin["public_key"]) if pin else None)
                 if report.ok:
                     detail = (f"{report.entries} entries, hash chain intact. "
@@ -703,8 +718,16 @@ class Workspace:
                                           "outcome": outcome, "detail": f"{name}: {detail}"})
             verifications.extend(self.checks)
             audit.sort(key=lambda row: row["timestamp"])
+            grants = [{"actor": grant["actor"], "asset": grant["asset"],
+                       **({"approvalId": grant["approval_id"]} if grant.get("approval_id") else {})}
+                      for _key, grant in sorted(authority["grants"].items())]
+            alerts = [{"id": f"{row['log']}-{row['seq']}", "timestamp": row["time"], "rule": row["rule"],
+                       "source": row["log"], "identity": row["actor"] or "(none)",
+                       "detail": row["why"] or row["rule"]}
+                      for row in self.alerts({})["rows"]]
             return {"schemaVersion": 1, "capturedAt": iso(time.time()), "devices": devices, "nodes": nodes,
                     "audit": audit[-MAX_AUDIT_ROWS:], "verifications": verifications[:MAX_AUDIT_ROWS],
+                    "grants": grants[:MAX_AUDIT_ROWS], "alerts": alerts[:MAX_AUDIT_ROWS],
                     "clock": iso(now), "clockOffsetSeconds": round(self.offset, 3)}
 
 

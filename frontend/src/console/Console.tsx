@@ -705,6 +705,61 @@ export default function Console() {
                   reset={() => connectLive(true)}
                 />
               )}
+              {snapshot && (
+                <div className="side-by-side">
+                  <section className="panel" aria-labelledby="alerts-title">
+                    <div className="panel-head">
+                      <h2 id="alerts-title">Alerts</h2>
+                      <span>{snapshot.alerts.length} recorded</span>
+                    </div>
+                    {snapshot.alerts.length === 0 ? (
+                      <p className="panel-empty">No alerts in the logs.</p>
+                    ) : (
+                      <ol className="alert-list">
+                        {snapshot.alerts.slice(0, 6).map((a) => (
+                          <li key={a.id}>
+                            <code>{a.rule}</code>
+                            <span>
+                              {a.identity} · {a.source} ·{" "}
+                              {formatDate(a.timestamp)}
+                            </span>
+                            <p>{a.detail}</p>
+                          </li>
+                        ))}
+                      </ol>
+                    )}
+                  </section>
+                  <section className="panel" aria-labelledby="grants-title">
+                    <div className="panel-head">
+                      <h2 id="grants-title">Grants</h2>
+                      <span>Read access beyond ownership</span>
+                    </div>
+                    {snapshot.grants.length === 0 ? (
+                      <p className="panel-empty">
+                        No grants. Owners read their own files only.
+                      </p>
+                    ) : (
+                      <ul className="grant-list">
+                        {snapshot.grants.map((g) => (
+                          <li key={`${g.actor}/${g.asset}`}>
+                            <strong>{g.actor}</strong> may read{" "}
+                            <strong>{g.asset}</strong>
+                            <span
+                              className={
+                                g.approvalId ? "grant-ok" : "grant-none"
+                              }
+                            >
+                              {g.approvalId
+                                ? `approval ${g.approvalId}`
+                                : "no approval on record"}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </section>
+                </div>
+              )}
               <section className="panel" aria-labelledby="recent-title">
                 <div className="panel-head">
                   <h2 id="recent-title">Latest decisions</h2>

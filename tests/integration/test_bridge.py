@@ -349,3 +349,21 @@ def test_the_messaging_demo_hides_the_text_and_refuses_a_replay(ws):
     pytest.importorskip("cryptography")
     rows = act(ws, name="message", sender="noor", recipient="maya", text="meet at noon")["rows"]
     assert [r["result"] for r in rows] == ["text hidden", "delivered: text matches", "refused"]
+
+
+def test_snapshot_shows_grants_and_alerts_and_pins_are_files(ws):
+    act(ws, name="grant", actor="eve", asset="budget", approved=False)
+    act(ws, name="grant", actor="noor", asset="plan", approved=True)
+    for _ in range(5):
+        ws.call_adapter({"op": "read", "actor": "eve", "asset": "plan", "request_id": "x"})
+    snap = ws.snapshot()
+    grants = {(g["actor"], g["asset"]): g.get("approvalId") for g in snap["grants"]}
+    assert grants == {("eve", "budget"): None, ("noor", "plan"): "chg-1"}
+    assert any(a["rule"] == "GRD-REPEATED-DENIAL" and a["source"] == "adapter" for a in snap["alerts"])
+    act(ws, name="pin")
+    pins = sorted(p.name for p in ws.pins_dir.iterdir())
+    assert pins == ["adapter.json", "authority.json", "node-a.json", "node-b.json", "node-c.json"]
+    for log_dir in ws._log_dirs().values():  # pins are never kept inside a log folder
+        assert log_dir.resolve() not in ws.pins_dir.resolve().parents and log_dir.resolve() != ws.pins_dir.resolve()
+    pin = json.loads((ws.pins_dir / "node-a.json").read_text())
+    assert pin["public_key"] and pin["seq"] >= 1

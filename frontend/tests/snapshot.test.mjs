@@ -111,3 +111,28 @@ test("imported valid outcomes remain data, not generated checks", () => {
     parse({ ...empty(), verifications: [{ ...v, outcome: "secure" }] }),
   );
 });
+test("grants and alerts are optional and validated", () => {
+  const none = parse(empty());
+  assert.deepEqual([none.grants, none.alerts], [[], []]);
+  const result = parse({
+    ...empty(),
+    grants: [{ actor: "eve", asset: "plan" }, { actor: "noor", asset: "plan", approvalId: "chg-1" }],
+    alerts: [
+      {
+        id: "authority-4",
+        timestamp: "2026-11-28T10:00:00Z",
+        rule: "DET-UNAPPROVED-ROLE-CHANGE",
+        source: "authority",
+        identity: "eve",
+        detail: "grant with no approval",
+      },
+    ],
+  });
+  assert.equal(result.grants[0].approvalId, undefined);
+  assert.equal(result.grants[1].approvalId, "chg-1");
+  assert.equal(result.alerts[0].rule, "DET-UNAPPROVED-ROLE-CHANGE");
+  assert.throws(() => parse({ ...empty(), grants: [{ actor: "", asset: "plan" }] }));
+  assert.throws(() =>
+    parse({ ...empty(), alerts: [{ id: "a", timestamp: "yesterday", rule: "R", source: "s", identity: "i", detail: "d" }] }),
+  );
+});

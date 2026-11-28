@@ -103,6 +103,28 @@ export function sampleSnapshot(): Snapshot {
       },
     ],
     audit: audit(),
+    grants: [
+      { actor: "noor", asset: "roadmap", approvalId: "sample-chg-7" },
+      { actor: "eve", asset: "ledger" },
+    ],
+    alerts: [
+      {
+        id: "sample-alert-1",
+        timestamp: at(30),
+        rule: "DET-UNAPPROVED-ROLE-CHANGE",
+        source: "authority",
+        identity: "eve",
+        detail: "Invented alert: a grant with no approval on record.",
+      },
+      {
+        id: "sample-alert-2",
+        timestamp: at(55),
+        rule: "GRD-REPEATED-DENIAL",
+        source: "adapter",
+        identity: "ravi",
+        detail: "Invented alert: one identity denied five times.",
+      },
+    ],
     verifications: [
       {
         id: "sample-chain",

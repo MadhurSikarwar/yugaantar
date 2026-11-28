@@ -27,6 +27,22 @@ export interface Verification {
   outcome: "valid" | "invalid" | "not-checked";
   detail: string;
 }
+/** Read permission the authority gave an actor for one file. */
+export interface Grant {
+  actor: string;
+  asset: string;
+  /** The change approval it cites; absent when none is on record. */
+  approvalId?: string;
+}
+/** An alert recorded in one of the signed logs. */
+export interface AlertRecord {
+  id: string;
+  timestamp: string;
+  rule: string;
+  source: string;
+  identity: string;
+  detail: string;
+}
 export interface Snapshot {
   schemaVersion: 1;
   capturedAt: string;
@@ -36,6 +52,9 @@ export interface Snapshot {
   nodes: NodeRecord[];
   audit: AuditRecord[];
   verifications: Verification[];
+  /** Optional in files; always present after parsing (empty when absent). */
+  grants: Grant[];
+  alerts: AlertRecord[];
 }
 type Obj = Record<string, unknown>;
 function object(v: unknown): Obj {
@@ -155,6 +174,31 @@ export function parseSnapshot(text: string): Snapshot {
       (v) => v.id,
       "verifications",
     ),
+    grants:
+      input.grants === undefined
+        ? []
+        : rows(input.grants, "grants", (g) => ({
+            actor: str(g.actor, "actor"),
+            asset: str(g.asset, "asset"),
+            ...(g.approvalId === undefined
+              ? {}
+              : { approvalId: str(g.approvalId, "approvalId") }),
+          })),
+    alerts:
+      input.alerts === undefined
+        ? []
+        : unique(
+            rows(input.alerts, "alerts", (a) => ({
+              id: str(a.id, "id"),
+              timestamp: date(a.timestamp, "timestamp"),
+              rule: str(a.rule, "rule"),
+              source: str(a.source, "source"),
+              identity: str(a.identity, "identity"),
+              detail: str(a.detail, "detail"),
+            })),
+            (a) => a.id,
+            "alerts",
+          ),
   };
 }
 export const formatDate = (v: string) =>

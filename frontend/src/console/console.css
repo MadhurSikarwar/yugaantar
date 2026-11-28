@@ -932,3 +932,51 @@ dialog::backdrop {
     fill: var(--bg);
   }
 }
+
+/* Alerts and grants on the overview */
+.side-by-side {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 22px;
+}
+.panel-empty {
+  padding: 16px 18px;
+  color: var(--fg-dim);
+}
+.alert-list li,
+.grant-list li {
+  padding: 12px 18px;
+  border-top: 1px solid var(--line);
+}
+.alert-list code {
+  font-weight: 700;
+  color: var(--deny);
+}
+.alert-list span {
+  display: block;
+  margin-top: 2px;
+  font-size: 13px;
+  color: var(--fg-dim);
+}
+.alert-list p {
+  margin-top: 4px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+.grant-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 10px;
+}
+.grant-list span {
+  margin-left: auto;
+  font-size: 13px;
+  font-weight: 600;
+}
+.grant-ok {
+  color: var(--allow);
+}
+.grant-none {
+  color: var(--amber-ink);
+}
