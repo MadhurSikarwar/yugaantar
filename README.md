@@ -29,9 +29,9 @@ Requirements: **Python 3.12** and Git. Runtime dependencies: `pqcrypto==0.4.0` a
 The submitted code is the repository's **default branch**. To check out exactly the revision named in the brief, run `git checkout <commit>` after cloning; `git log -1` shows what you have.
 
 ```sh
-git clone https://github.com/MadhurSikarwar/yugaantar.git
+git clone https://github.com/MadhurSikarwar/latticelock.git
 git clone https://github.com/ScalerOpenSourceLabs/Track-4-Toolkit.git   # next to the repository, not inside it
-cd yugaantar
+cd latticelock
 python3.12 -m venv .venv
 . .venv/bin/activate                       # Windows: .venv\Scripts\activate
 python -m pip install -r requirements.txt -r requirements-dev.txt
