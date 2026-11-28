@@ -238,7 +238,7 @@ export default function Console() {
     };
   }, []);
   useEffect(() => {
-    document.title = `${tab} — Track 4 console`;
+    document.title = `${tab} | Latticelock console`;
   }, [tab]);
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
@@ -563,7 +563,7 @@ export default function Console() {
       </a>
       <aside className="sidebar">
         <a className="brand" href="#/">
-          Track 4
+          Latticelock
         </a>
         <nav aria-label="Console navigation">
           {tabs.map((name, i) => (

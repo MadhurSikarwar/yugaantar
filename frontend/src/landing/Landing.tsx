@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import Board from "./Board.tsx";
+import { useEffect } from "react";
+import Annunciator from "./Annunciator.tsx";
 import LedgerLab from "./LedgerLab.tsx";
 import PolicyLab from "./PolicyLab.tsx";
 import RevocationLab from "./RevocationLab.tsx";
@@ -44,9 +44,8 @@ const limits = [
 ];
 
 export default function Landing() {
-  const [lost, setLost] = useState(false);
   useEffect(() => {
-    document.title = "Track 4 | Trust, but verify";
+    document.title = "Latticelock | Trust, but verify";
     if (location.hash && !location.hash.startsWith("#/"))
       document.getElementById(location.hash.slice(1))?.scrollIntoView();
   }, []);
@@ -58,7 +57,7 @@ export default function Landing() {
       <div className="hero">
         <header className="site-header">
           <a className="wordmark" href="#/">
-            Track 4
+            Latticelock
           </a>
           <nav aria-label="Main navigation">
             <a href="#revocation">Revocation</a>
@@ -66,30 +65,25 @@ export default function Landing() {
             <a href="#policy">Policy</a>
             <a href="#limits">Limits</a>
           </nav>
-          <a className="button button-light" href="#/console">
+          <a className="button" href="#/console">
             Open console
           </a>
         </header>
         <section className="hero-body" aria-labelledby="hero-title">
-          <h1 id="hero-title">Trust, but verify.</h1>
-          <p>
-            A lost device loses access to protected files. Everyone else keeps
-            working, and every decision is logged with the rule that made it.
-          </p>
-          <Board lost={lost} />
-          <div className="hero-actions">
-            <button
-              className={`button ${lost ? "button-light" : "button-deny"}`}
-              onClick={() => setLost((v) => !v)}
-            >
-              {lost ? "Reset the board" : "Report Maya’s phone lost"}
-            </button>
-            <span role="status">
-              {lost
-                ? "One row changed. Noor and Ravi get the same answers as before."
-                : "Example requests. Try losing a device."}
-            </span>
+          <div className="hero-copy">
+            <h1 id="hero-title">Trust, but verify.</h1>
+            <p>
+              Latticelock protects files on devices that can go missing. Revoke
+              a device and every honest node refuses it within 62 seconds. Every
+              decision is logged with the rule that made it, in a hash-chained,
+              signed log where edits can be detected.
+            </p>
+            <p className="hero-hint">
+              Press a button on the panel. Each line the printer types carries
+              the rule ID the service writes to its log for that event.
+            </p>
           </div>
+          <Annunciator />
         </section>
       </div>
       <main>
@@ -135,7 +129,9 @@ export default function Landing() {
         </section>
       </main>
       <footer className="site-footer">
-        <span>Track 4, Yugaantar DevForge</span>
+        <span>
+          Latticelock, by Team Sleep Deprived. Yugaantar DevForge, Track 4.
+        </span>
         <a href="#/console">Open console</a>
         <button onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}>
           Back to top

@@ -1,31 +1,49 @@
 :root {
-  --ultra: #2a1fd1;
-  --night: #0f0b3a;
-  --night-2: #18134e;
-  --night-3: #231d66;
-  --line: #36307f;
-  --frost: #eef0ff;
-  --muted: #b3b7e8;
-  --allow: #3fe0c5;
-  --deny: #ff5c40;
-  --amber: #ffc247;
-  --chart-allow: #10a8a0;
-  --chart-deny: #f25a3c;
-  --chart-neutral: #8780ff;
-  --radius: 3px;
+  /* Control-room palette. The surface is enclosure grey (close to RAL 7035, the usual
+     colour of industrial cabinets); colour is kept for state, as on an ISA-101 operator
+     screen: green running, amber warning, red alarm. */
+  --bg: #cdd1cc;
+  --bg-2: #c1c6c0;
+  --bg-3: #b2b8b2;
+  --line: #959b96;
+  --fg: #1b1e1d;
+  --fg-dim: #464c49;
+  --accent: #262b2d;
+  --allow: #0f5c27;
+  --deny: #9e240c;
+  --amber: #ffb000;
+  /* Amber that is readable as text on the grey surface. */
+  --amber-ink: #684500;
+  /* The dark bezel around the alarm panel, the printer and the evidence log. */
+  --bezel: #23272a;
+  --bezel-2: #2e3437;
+  --bezel-line: #4a5155;
+  --bezel-fg: #e9ebe6;
+  --bezel-dim: #a9afab;
+  /* Lamps, lit and unlit. Text on a lit lamp is always --fg. */
+  --lamp-off: #e3e5df;
+  --lamp-off-ink: #5c625f;
+  --lamp-amber: #ffb000;
+  --lamp-red: #ff5a3c;
+  --lamp-green: #3fd072;
+  --chart-allow: #1d7a46;
+  --chart-deny: #c43a1f;
+  --chart-neutral: #3f4fbf;
+  --radius: 2px;
+  --focus: var(--fg);
   /* Hovering swaps to the opposite of the surface underneath. */
-  --hover-bg: var(--frost);
-  --hover-fg: var(--night);
-  /* Status text that stays readable on a light hover background. */
-  --allow-ink: #00695c;
-  --deny-ink: #a8230c;
+  --hover-bg: var(--fg);
+  --hover-fg: var(--bg);
+  /* Status text that stays readable on a dark (hovered) background. */
+  --allow-ink: #7ee09a;
+  --deny-ink: #ff9c86;
   --gutter: clamp(20px, 4.5vw, 80px);
   --inset: max(var(--gutter), calc((100% - 1480px) / 2));
   --mono: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace;
   font-family: "Instrument Sans Variable", Arial, sans-serif;
-  color: var(--frost);
-  background: var(--night);
-  color-scheme: dark;
+  color: var(--fg);
+  background: var(--bg);
+  color-scheme: light;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -78,12 +96,18 @@ code {
   overflow-wrap: anywhere;
 }
 :focus-visible {
-  outline: 3px solid var(--amber);
+  outline: 3px solid var(--focus);
   outline-offset: 3px;
+}
+/* Dark surfaces: a lamp-amber focus ring. */
+.on-bezel {
+  --focus: var(--amber);
+  --hover-bg: var(--bezel-fg);
+  --hover-fg: var(--bezel);
 }
 ::selection {
   background: var(--amber);
-  color: var(--night);
+  color: var(--bg);
 }
 .sr-only {
   position: absolute !important;
@@ -98,8 +122,8 @@ code {
   top: -120px;
   left: 20px;
   z-index: 100;
-  background: var(--frost);
-  color: var(--night);
+  background: var(--fg);
+  color: var(--bg);
   padding: 14px 18px;
   font-weight: 600;
 }
@@ -123,19 +147,19 @@ code {
   opacity: 0.45;
 }
 .button-light {
-  background: var(--frost);
-  border-color: var(--frost);
-  color: var(--night);
+  background: var(--fg);
+  border-color: var(--fg);
+  color: var(--bg);
 }
 .button-deny {
   background: var(--deny);
   border-color: var(--deny);
-  color: var(--night);
+  color: #fff;
 }
 .button-dark {
-  background: var(--night);
-  border-color: var(--night);
-  color: var(--frost);
+  background: var(--bg);
+  border-color: var(--bg);
+  color: var(--fg);
 }
 @media (hover: hover) {
   .button:hover:not(:disabled) {
@@ -144,19 +168,19 @@ code {
     color: var(--hover-fg);
   }
   .button.button-light:hover:not(:disabled) {
-    background: var(--night);
-    border-color: var(--frost);
-    color: var(--frost);
+    background: var(--bg);
+    border-color: var(--fg);
+    color: var(--fg);
   }
   .button.button-deny:hover:not(:disabled) {
-    background: var(--night);
+    background: var(--bg);
     border-color: var(--deny);
     color: var(--deny);
   }
   .button.button-dark:hover:not(:disabled) {
-    background: var(--frost);
-    border-color: var(--night);
-    color: var(--night);
+    background: var(--fg);
+    border-color: var(--bg);
+    color: var(--bg);
   }
 }
 .route-loading {

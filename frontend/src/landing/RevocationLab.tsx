@@ -129,6 +129,10 @@ export default function RevocationLab() {
               </div>
               <article className={`node-card${stale ? " node-stale" : ""}`}>
                 <div className="node-head">
+                  <span
+                    className={`pilot ${stale ? "pilot-red" : age > T * 0.66 ? "pilot-amber" : "pilot-green"}`}
+                    aria-hidden="true"
+                  />
                   <h3>{node.id}</h3>
                   <button
                     className="toggle"
