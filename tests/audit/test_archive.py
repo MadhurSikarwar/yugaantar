@@ -54,11 +54,16 @@ def test_a_forged_anchor_is_refused_everywhere(tmp_path):
     assert not verify_log(live).ok
 
 
-def test_an_interrupted_archive_is_finished_by_running_it_again(tmp_path):
+def test_an_interrupted_archive_fails_closed_and_is_finished_by_running_it_again(tmp_path):
     live, store = tmp_path / "log", tmp_path / "archive"
     _add(_log(live), 10)
     archive(live, store)
-    (live / SEGMENT_NAME).unlink()  # the crash: log emptied, anchor not yet written
+    segment = store / "segment-000001"
+    # The crash: the anchor was written but the live files were not emptied yet.
+    for name in (LOG_NAME, CHECKPOINT_NAME):
+        (live / name).write_bytes((segment / name).read_bytes())
+    with pytest.raises(AuditIntegrityError):  # readers fail closed in between
+        _add(_log(live), 1, start=10)
     assert archive(live, store)["completed_earlier_run"] is True
     _add(_log(live), 1, start=10)
     assert _log(live).last_seq() == 11 and verify_log(live).ok
@@ -98,3 +103,108 @@ def test_the_adapter_keeps_working_after_its_log_is_archived(tmp_path):
 
     assert check(tmp_path / "state")["problems"] == []
     assert verify_log(tmp_path / "state" / "audit").ok
+
+
+# -- regression A: archiving must not let an older state.json restore revoked access ---------------
+
+
+def _adapter(tmp_path):
+    import os
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    env = {**os.environ, "TRACK4_STATE_DIR": str(tmp_path / "state")}
+
+    def call(request):
+        done = subprocess.run([sys.executable, "-B", str(root / "track4_service.py")], input=json.dumps(request).encode(),
+                              capture_output=True, env=env, cwd=root, timeout=60)
+        return json.loads(done.stdout) if done.returncode == 0 else {"exit": done.returncode}
+
+    return call
+
+
+SETUP = {"op": "setup", "owners": {"a": "maya"}, "contents": {"a": "body"}, "disabled": [], "key_material": "k"}
+
+
+@pytest.mark.parametrize("after", ["archive", "archive+entries", "archive+setup", "two-segments"])
+def test_an_old_state_file_after_archival_cannot_restore_revoked_access(tmp_path, after):
+    from t4.consistency import check
+
+    call = _adapter(tmp_path)
+    state = tmp_path / "state" / "state.json"
+    assert call(SETUP) == {"ready": True}
+    saved = state.read_bytes()  # an older copy, from before the revocation
+    assert call({"op": "revoke", "actor": "maya"}) == {}
+    assert call({"op": "read", "actor": "maya", "asset": "a", "request_id": "r1"}) == {"decision": "deny"}
+    store = tmp_path / "archive"
+    archive(tmp_path / "state" / "audit", store)
+    if after == "archive+entries":
+        call({"op": "read", "actor": "maya", "asset": "a", "request_id": "r2"})
+    if after == "two-segments":
+        call({"op": "read", "actor": "maya", "asset": "a", "request_id": "r3"})
+        archive(tmp_path / "state" / "audit", store)
+    if after == "archive+setup":
+        # A later setup raises the epoch again; the state copy predates it too.
+        call(SETUP)
+        saved_after_setup = state.read_bytes()
+        call({"op": "revoke", "actor": "maya"})
+        archive(tmp_path / "state" / "audit", store)
+        saved = saved_after_setup
+    state.write_bytes(saved)  # put the old state back, everything else current
+    assert "body" not in json.dumps(call({"op": "read", "actor": "maya", "asset": "a", "request_id": "r9"}))
+    assert any("older" in problem or "epoch" in problem for problem in check(tmp_path / "state")["problems"])
+
+
+def test_a_queued_event_written_before_an_archive_is_not_written_again(tmp_path):
+    live = tmp_path / "log"
+    log = _log(live)
+    log.append_once(actor="a", action="revoke", target="m", decision="ok", rule="ADM-REVOKE", request_id="sys-1")
+    archive(live, tmp_path / "archive")
+    log = _log(live)
+    log.append_once(actor="a", action="revoke", target="m", decision="ok", rule="ADM-REVOKE", request_id="sys-1")
+    assert log.entries() == []  # already written in the archived segment
+
+
+# -- regression B: an old pin is checked through the archive, never passed unchecked ---------------
+
+
+def _pin(folder):
+    head = AuditLog(folder, load_or_create_signer(folder)).head()
+    return dict(head, public_key=(folder / "audit.pub").read_bytes().hex())
+
+
+def test_an_old_pin_without_the_archive_is_a_failure_not_a_pass(tmp_path):
+    live, store = tmp_path / "log", tmp_path / "archive"
+    _add(_log(live), 1)
+    pin = _pin(live)
+    _add(_log(live), 1, start=1)
+    archive(live, store)
+    key = bytes.fromhex(pin["public_key"])
+    report = verify_log(live, pin, key)
+    assert not report.ok and "NOT checked" in report.errors[0]
+    assert verify_log(live, pin, key, store).ok
+
+
+def test_an_old_pin_detects_a_rewritten_missing_or_reordered_archive(tmp_path):
+    live, store = tmp_path / "log", tmp_path / "archive"
+    _add(_log(live), 3)
+    pin = _pin(live)
+    key = bytes.fromhex(pin["public_key"])
+    archive(live, store)
+    _add(_log(live), 3, start=3)
+    archive(live, store)
+    assert verify_log(live, pin, key, store).ok
+    first, second = store / "segment-000001", store / "segment-000002"
+    # Reordered: swap the two folders' names.
+    first.rename(store / "tmp"); second.rename(first); (store / "tmp").rename(second)
+    assert not verify_log(live, pin, key, store).ok
+    second.rename(store / "tmp"); first.rename(second); (store / "tmp").rename(first)
+    assert verify_log(live, pin, key, store).ok
+    # Missing segment.
+    first.rename(store / "away")
+    assert not verify_log(live, pin, key, store).ok
+    (store / "away").rename(first)
+    # Rewritten history in the archived copy.
+    data = (first / LOG_NAME).read_bytes()
+    (first / LOG_NAME).write_bytes(data.replace(b'"request_id":"r0"', b'"request_id":"zz"', 1))
+    assert not verify_log(live, pin, key, store).ok

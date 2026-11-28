@@ -54,6 +54,10 @@ def check(state_dir: Path) -> dict:
     try:
         log = AuditLog(effective / "audit", None)
         newest_seq = log.last_seq()  # an archived log starts after its anchor, not at 1
+        anchor = log.anchor()  # archived history: its highest epoch and generation travel here
+        if anchor:
+            log_generation = int(anchor["watermark"].get("generation", 0))
+            log_epoch = int(anchor["watermark"].get("epoch", 0))
         for entry in log.iter_entries():
             entries += 1
             newest_seq = entry["seq"]

@@ -540,7 +540,8 @@ class Workspace:
 
         rows = []
         for name, directory in self._log_dirs().items():
-            report = verify_log(directory, *self._pin_args(name))
+            archive_dir = self.base / "archive" / name
+            report = verify_log(directory, *self._pin_args(name), archive_dir if archive_dir.is_dir() else None)
             rows.append({"log": name, "result": "ok" if report.ok else "FAILED", "entries": report.entries,
                          "signed_to": report.covered_seq, "pinned": "yes" if self._pin_of(name) else "no",
                          "first_bad_entry": report.first_bad_seq if report.first_bad_seq is not None else "",
@@ -846,7 +847,9 @@ class Workspace:
                                           "asset": entry["target"] or "(none)",
                                           "decision": entry["decision"], "rule": entry["rule"]})
                 pin = self._pin_of(name)
-                report = verify_log(directory, pin, bytes.fromhex(pin["public_key"]) if pin else None)
+                archive_dir = self.base / "archive" / name
+                report = verify_log(directory, pin, bytes.fromhex(pin["public_key"]) if pin else None,
+                                    archive_dir if archive_dir.is_dir() else None)
                 if report.ok:
                     detail = (f"{report.entries} entries, hash chain intact. "
                               + (f"Matches the pin at entry {pin['seq']} and the pinned public key." if pin else

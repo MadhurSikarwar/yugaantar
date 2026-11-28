@@ -342,29 +342,52 @@ def load_or_create_signer(directory: Path | str) -> MLDSASigner:
     return MLDSASigner(public_key, secret_key)
 
 
-def read_origin(directory: Path | str, public_key: bytes | None) -> tuple[int, str]:
-    """Where the live chain starts: ``(0, GENESIS_HASH)``, or the signed anchor left by ``archive``.
+ANCHOR_TYPE = "audit-segment-anchor-v2"
 
-    The anchor is a checkpoint record (seq, hash, ts, sig) signed with the log's own key, so a
-    forged or edited anchor cannot shorten history: it fails here and every reader fails closed.
+
+def anchor_message(body: Mapping[str, object]) -> bytes:
+    """The exact bytes an archive anchor's signature covers (every field except ``sig``)."""
+    return canonical({key: value for key, value in body.items() if key != "sig"})
+
+
+def once_digest(request_id: str, rule: str) -> str:
+    """Compact identity of an entry written with ``append_once`` (kept across archived segments)."""
+    return hashlib.sha256(canonical([request_id, rule])).hexdigest()[:32]
+
+
+def read_anchor(directory: Path | str, public_key: bytes | None) -> dict | None:
+    """The verified archive anchor of the live segment, or ``None`` when nothing was archived.
+
+    The anchor is signed with the log's own key over: where the live chain continues from
+    (seq, hash), the segment number, the security watermark of everything archived so far (the
+    highest ``epoch`` and ``generation`` any entry recorded) and the identities of entries written
+    with ``append_once``. A forged, edited or old-format anchor fails here and every reader fails
+    closed, so archiving can never lower the watermark a rolled-back state is checked against.
     """
-    path = Path(directory) / SEGMENT_NAME
-    data = read_bytes(path)
+    data = read_bytes(Path(directory) / SEGMENT_NAME)
     if not data:
-        return 0, GENESIS_HASH
+        return None
     try:
         record = json.loads(data.decode("ascii"))
-        seq, head_hash, ts = record["seq"], record["hash"], record["ts"]
+        seq, head_hash, mark = record["seq"], record["hash"], record["watermark"]
         signature = bytes.fromhex(record["sig"])
-        if type(seq) is not int or seq < 1 or not isinstance(head_hash, str) or not isinstance(ts, str):
+        if (record["type"] != ANCHOR_TYPE or type(seq) is not int or seq < 1 or not isinstance(head_hash, str)
+                or not isinstance(mark, dict) or not all(type(v) is int for v in mark.values())
+                or not isinstance(record["once"], list) or type(record["segment"]) is not int):
             raise ValueError
     except (ValueError, KeyError, TypeError, UnicodeError, RecursionError):
-        raise AuditIntegrityError("the archive anchor is malformed") from None
+        raise AuditIntegrityError("the archive anchor is malformed or from an older format") from None
     from t4.crypto import sig
 
-    if not public_key or not sig.verify(public_key, checkpoint_message(seq, head_hash, ts), signature):
+    if not public_key or not sig.verify(public_key, anchor_message(record), signature):
         raise AuditIntegrityError("the archive anchor is not signed by this log's key")
-    return seq, head_hash
+    return record
+
+
+def read_origin(directory: Path | str, public_key: bytes | None) -> tuple[int, str]:
+    """Where the live chain starts: ``(0, GENESIS_HASH)``, or the verified archive anchor."""
+    anchor = read_anchor(directory, public_key)
+    return (0, GENESIS_HASH) if anchor is None else (anchor["seq"], anchor["hash"])
 
 
 def _listed_ids(entry: dict) -> list:
@@ -505,6 +528,11 @@ class AuditLog:
                 entry = parse_line(raw[:-1])
                 if entry["request_id"] == request_id and entry["rule"] == rule:
                     return {"seq": entry["seq"], "hash": entry["hash"]}
+        # Written in an archived segment: the signed anchor keeps the identities of those entries,
+        # so a queued event is never logged a second time after its segment was archived.
+        anchor = self.anchor()
+        if anchor and once_digest(request_id, rule) in anchor["once"]:
+            return {"seq": anchor["seq"], "hash": anchor["hash"]}
         return None
 
     def alert(
@@ -593,8 +621,15 @@ class AuditLog:
                 if type(value) is int and (best is None or value > best):
                     best = value
             if best is not None or len(tail) < window:  # found, or the whole log was read
-                return best
+                break
             window *= 16
+        # Archived segments are gone from this file, but their highest values travel in the signed
+        # anchor: a security floor (the epoch) must never drop because entries were archived.
+        anchor = self.anchor()
+        carried = anchor["watermark"].get(name) if anchor else None
+        if type(carried) is int and (best is None or carried > best):
+            best = carried
+        return best
 
     # ---- reading -----------------------------------------------------------------
 
@@ -710,6 +745,10 @@ class AuditLog:
 
     def _origin(self) -> tuple[int, str]:
         return read_origin(self.directory, read_bytes(self.directory / PUBLIC_KEY_NAME))
+
+    def anchor(self) -> dict | None:
+        """The verified archive anchor (``None`` if nothing was archived). Raises if it is forged."""
+        return read_anchor(self.directory, read_bytes(self.directory / PUBLIC_KEY_NAME))
 
     def _newest_checkpoint(self) -> dict | None:
         lines, _partial = _tail(self.checkpoint_path, 1)

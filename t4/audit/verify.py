@@ -67,8 +67,14 @@ def verify_log(
     directory: Path | str,
     pinned_head: dict | None = None,
     pinned_public_key: bytes | None = None,
+    archive_dir: Path | str | None = None,
 ) -> VerifyReport:
-    """Verify the log in ``directory``. Never raises for damaged input."""
+    """Verify the log in ``directory``. Never raises for damaged input.
+
+    A pin older than an archive boundary is checked through ``archive_dir`` (every archived
+    segment, their signed links and the segment holding the pinned entry). Without it such a pin
+    is a FAILURE ("not checked"), never a silent pass.
+    """
     folder = Path(directory)
     errors: list[str] = []
     warnings: list[str] = []
@@ -207,8 +213,18 @@ def verify_log(
 
     def compare(source: str, seq: int, head_hash: str) -> bool:
         if seq < origin_seq:
-            warnings.append(f"{source}: entry {seq} is in an archived segment; not checked here")
-            return False
+            if source != "pinned head":
+                warnings.append(f"{source}: entry {seq} is in an archived segment; not checked here")
+                return False
+            if archive_dir is None:
+                fail(f"pinned head: entry {seq} is in an archived segment and was NOT checked; "
+                     "verify with the archive (verify-log --archive <folder>)")
+                return False
+            problem = _archive_continuity(Path(archive_dir), (origin_seq, origin_hash), pinned_head, key)
+            if problem:
+                fail(f"pinned head: {problem}")
+                return False
+            return True
         if seq == origin_seq:
             if head_hash != origin_hash:
                 fail(f"{source}: wrong starting hash", origin_seq + 1)
@@ -248,6 +264,46 @@ def verify_log(
         key_pinned=pinned_public_key is not None,
         head_pinned=pinned_head is not None,
     )
+
+
+def _archive_continuity(archive: Path, live_origin: tuple[int, str], pin: dict, key: bytes) -> str:
+    """Check an old pin through the archive. Returns a problem, or "" when everything checks.
+
+    Each archived segment must verify against its own signed head (``pin.json``), start exactly
+    where the previous one ended (its copied anchor names the previous head), and the live
+    segment must start where the last archived one ended. The segment holding the pinned entry
+    must also verify against the OLD pin, so a substituted, reordered, missing or edited segment,
+    or history rewritten before the archive, is caught.
+    """
+    from t4.audit.archive import segments
+
+    found = segments(archive)
+    if not found:
+        return f"no archived segments in {archive.name}"
+    previous: tuple[int, str] = (0, GENESIS_HASH)
+    matched = False
+    for folder in found:
+        try:
+            head = json.loads((folder / "pin.json").read_text(encoding="ascii"))
+            start = read_origin(folder, key)
+        except (OSError, ValueError, AuditIntegrityError):
+            return f"{folder.name}: missing or damaged pin or anchor"
+        if start != previous:
+            return f"{folder.name}: does not continue the previous segment (missing, reordered or substituted)"
+        report = verify_log(folder, head, key)
+        if not report.ok:
+            return f"{folder.name}: {report.errors[0] if report.errors else 'does not verify'}"
+        if start[0] <= pin["seq"] <= head["seq"]:
+            old = verify_log(folder, pin, key)
+            if not old.ok:
+                return f"{folder.name}: {old.errors[0] if old.errors else 'does not match the old pin'}"
+            matched = True
+        previous = (head["seq"], head["hash"])
+    if previous != live_origin:
+        return "the live log does not continue the last archived segment"
+    if not matched:
+        return f"no archived segment holds entry {pin['seq']}"
+    return ""
 
 
 def _size(path: Path) -> int:

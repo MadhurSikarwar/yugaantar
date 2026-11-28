@@ -63,9 +63,11 @@ def _parser() -> argparse.ArgumentParser:
     pin.add_argument("--pin", required=True, help="the pin file (kept outside the audit directory)")
     verify = commands.add_parser("verify-log", help="check the whole log")
     verify.add_argument("--pin", help="file saved earlier with 'head --out'")
+    verify.add_argument("--archive", help="archive folder, to check a pin older than an archive boundary")
     explain = commands.add_parser("explain", help="show the entries behind a decision")
     explain.add_argument("request_id", nargs="?")
     explain.add_argument("--challenge", help="SHA-256 (hex) of a protected_read challenge")
+    explain.add_argument("--archive", help="also search the archived segments in this folder")
     commands.add_parser("alerts", help="list alerts")
     archive = commands.add_parser("archive", help="move the finished segment to an archive folder; the log continues")
     archive.add_argument("--to", required=True, help="archive folder, outside the log folder")
@@ -171,7 +173,9 @@ def main(argv: list[str] | None = None) -> int:
             pin = json.loads(Path(args.pin).read_text(encoding="utf-8")) if args.pin else None
             public_key = _pin_key(pin) if pin is not None else None
             started = time.perf_counter()
-            report = AuditLog(args.dir, None).verify(pin, public_key)
+            from t4.audit.verify import verify_log
+
+            report = verify_log(args.dir, pin, public_key, getattr(args, "archive", None))
             result = report.as_dict()
             # What was checked and how long it took, so an operator can see the verified range.
             result["checked_range"] = [1, report.entries] if report.entries else []
@@ -210,7 +214,13 @@ def main(argv: list[str] | None = None) -> int:
                 related = log.explain(entry["request_id"]) if entry["request_id"] else [entry]
                 found.extend(item for item in related if item not in found)
         else:
-            found = log.explain(args.request_id)
+            found = []
+            if getattr(args, "archive", None):  # archived segments first, oldest first
+                from t4.audit.archive import segments
+
+                for folder in segments(args.archive):
+                    found.extend(AuditLog(folder, None).explain(args.request_id))
+            found.extend(log.explain(args.request_id))
         for entry in found:
             _emit(entry)
         if not found:
