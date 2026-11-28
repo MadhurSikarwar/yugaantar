@@ -169,9 +169,9 @@ Event files: columns are matched by name (extra ones are ignored); times are UTC
 | Goal | Status | What exists |
 |---|---|---|
 | 9. Replay and recipient binding | Demo layer only | `demo/messaging.py`: ML-KEM-768 + HKDF + ChaCha20-Poly1305 (vetted `cryptography`), ML-DSA-65 signature over the header, recipient and sender checked, per-sender sequence numbers (restart-safe with `FileReplayGuard`). The judged adapter carries files, not messages. |
-| 10. Forward secrecy | Not supported | Messages are encapsulated to the recipient's long-term ML-KEM key: a later leak of that key reveals earlier messages. A ratchet is not built. |
-| 11. Delivery under loss or reordering | Not supported | No retransmission or delivery guarantee. Reordered or duplicate messages are refused by the sequence check; nothing reports lost ones. |
-| 12. Session resumption | Not supported | There are no sessions. |
+| 10. Forward secrecy | Demo layer only | `demo/sessions.py`: each message is encapsulated to its own one-time ML-KEM-768 prekey from a bundle signed by the recipient; the recipient deletes that prekey's secret once the message is opened, so stealing the recipient's state later does not reveal delivered messages. No ratchet; undelivered messages are not covered. |
+| 11. Delivery under loss or reordering | Demo layer only | `demo/sessions.py`: the receiver accepts each number once in any order, reports gaps and sends a signed acknowledgement; the sender keeps unacknowledged messages and re-sends them until acknowledged. Duplicates are refused. |
+| 12. Session resumption | Demo layer only | `demo/sessions.py`: each side keeps its session in one atomically written file and resumes after a restart (numbering, outbox, delivered set, remaining prekeys). The file is not encrypted. |
 
 The judged interface is a file service (`read`, `protected_read`); whether goals 9 to 12 apply to a file-only prototype is a question for the organizers.
 

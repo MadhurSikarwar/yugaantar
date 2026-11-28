@@ -404,3 +404,12 @@ def test_the_gateway_authenticates_callers_in_front_of_the_real_adapter(ws):
     assert rows == [{"alert": "authority-7", "verdict": "reject", "reviewer": "reviewer-ana",
                      "signature": "valid", "why": "no approval on record"}]
     assert {v["id"]: v["outcome"] for v in ws.snapshot()["verifications"]}["chain-gateway"] == "valid"
+
+
+def test_the_session_demo_covers_loss_reordering_restart_and_forward_secrecy(ws):
+    pytest.importorskip("cryptography")
+    rows = {r["step"]: r["result"] for r in act(ws, name="session")["rows"]}
+    assert rows["receiver reports missing"] == "[2]"
+    assert rows["resend of 2"] == "two"
+    assert rows["the original 2 arrives late"] == "refused"
+    assert rows["forward secrecy"] == "prekey secrets of delivered messages deleted"

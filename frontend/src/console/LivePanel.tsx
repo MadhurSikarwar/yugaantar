@@ -548,6 +548,9 @@ export default function LivePanel({ snapshot, refresh, reset }: Props) {
               text: message,
             }),
           )}
+          {button("Run session demo: loss, reordering, restart", () =>
+            action("Session", { name: "session" }),
+          )}
           <p className="live-note">
             ML-KEM-768 and ChaCha20-Poly1305 encrypt it, ML-DSA-65 signs it. Not
             forward secret. The judged adapter does not use this.

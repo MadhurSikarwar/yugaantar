@@ -236,7 +236,7 @@ class Workspace:
             "pin": self.pin, "verify": self.verify, "tamper": self.tamper, "detect": self.detect,
             "health": self.health, "backup": self.backup, "restore": self.restore, "message": self.message,
             "revoke_key": self.revoke_key, "gateway": self.gateway_request,
-            "review": self.review,
+            "review": self.review, "session": self.session,
         }
         if name not in handlers:
             raise BridgeError("unknown_action")
@@ -721,6 +721,44 @@ class Workspace:
                  "why": f"sequence {seq} was already accepted, so a replay is refused"}]
         return {"summary": f"{sender} sent {recipient} an encrypted, signed message (demo layer, not forward secret).",
                 "rows": rows}
+
+    def session(self, body: dict) -> dict:
+        """Run the demo-layer session (``demo/sessions.py``): a lost and a reordered message, a
+        restart in the middle, and the forward-secrecy check after delivery."""
+        try:
+            from demo import messaging as m
+            from demo.sessions import Receiver, Sender
+
+            m._aead()
+        except Exception:  # noqa: BLE001 - the optional package is missing
+            raise BridgeError("messaging_needs_requirements_demo_txt") from None
+        from t4.crypto import sig
+
+        folder = self.base / "sessions" / secrets.token_hex(4)
+        maya_pk, maya_sk = sig.sig_keygen()
+        noor_pk, noor_sk = sig.sig_keygen()
+        receiver = Receiver.create(folder / "noor.json", me="noor", peer="maya", peer_sig_public=maya_pk,
+                                   identity_secret=noor_sk, prekeys=8)
+        sender = Sender.create(folder / "maya.json", me="maya", peer="noor", identity_secret=maya_sk,
+                               peer_sig_public=noor_pk)
+        rows = [{"step": "signed prekey bundle", "result": f"{sender.accept_bundle(receiver.bundle())} prekeys accepted"}]
+        one, two, three = (sender.send(text) for text in ("one", "two", "three"))
+        rows.append({"step": "3 sent, 2 lost, 3 before 1", "result": f"{receiver.receive(three)}, {receiver.receive(one)}"})
+        rows.append({"step": "receiver reports missing", "result": str(receiver.missing())})
+        rows.append({"step": "signed ack to sender", "result": f"confirmed {sender.handle_ack(receiver.ack())}"})
+        sender, receiver = Sender.load(sender.path), Receiver.load(receiver.path)
+        rows.append({"step": "both sides restart and resume", "result": f"unacknowledged {sender.unacknowledged()}"})
+        (again,) = sender.resend()
+        rows.append({"step": "resend of 2", "result": receiver.receive(again)})
+        try:
+            receiver.receive(two)
+            duplicate = "ACCEPTED"
+        except m.MessagingError:
+            duplicate = "refused"
+        rows.append({"step": "the original 2 arrives late", "result": duplicate})
+        rows.append({"step": "forward secrecy", "result": "prekey secrets of delivered messages deleted"
+                     if not any(e["prekey"] in receiver.state["prekeys"] for e in (one, again, three)) else "KEPT"})
+        return {"summary": "Session demo: loss, reordering, restart and forward secrecy (demo layer only).", "rows": rows}
 
     # -- snapshot -----------------------------------------------------------
 
