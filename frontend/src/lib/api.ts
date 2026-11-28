@@ -75,6 +75,7 @@ const text = (value: unknown) =>
 
 /** Turn a bridge reply into one line. Only known fields are shown. */
 export function summarize(raw: Record<string, unknown>): string {
+  if (typeof raw.summary === "string") return raw.summary;
   if (typeof raw.decision === "string")
     return [
       raw.decision.toUpperCase(),

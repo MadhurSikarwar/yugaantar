@@ -32,7 +32,8 @@
   align-items: center;
   gap: 8px;
 }
-.live select {
+.live select,
+.live input:not([type]) {
   min-height: 40px;
   padding: 0 12px;
   border: 1px solid var(--line);
@@ -73,4 +74,28 @@
 .live button[aria-pressed="true"] {
   background: var(--amber);
   color: var(--fg);
+}
+
+.live input:not([type]):focus-visible,
+.live select:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+/* Results returned by an operator action (rows of text). */
+.live-table {
+  margin: 0 16px 16px;
+  max-height: 420px;
+  overflow: auto;
+  border: 1px solid var(--line);
+}
+.live-table table {
+  font-size: 13px;
+}
+.live-table th,
+.live-table td {
+  white-space: nowrap;
+}
+.live-table td:last-child {
+  min-width: 320px;
+  white-space: normal;
 }
