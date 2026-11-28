@@ -442,3 +442,21 @@ def test_challenge_policy_once_refuses_a_reused_challenge(adapter):
     assert "CRY-CHALLENGE-REUSED" in rules
     provision(adapter)  # a new generation starts with no answered challenges
     assert "proof" in _protected(adapter, "maya", "c1")
+
+
+def test_a_full_challenge_registry_refuses_instead_of_forgetting(adapter, monkeypatch):
+    import t4.identity
+
+    adapter.env["TRACK4_CHALLENGE_POLICY"] = "once"
+    provision(adapter)
+    # Fill the registry directly (the adapter runs in another process: patch the saved state).
+    from t4.store import FileStore
+
+    store = FileStore(adapter.state_dir)
+    with store.locked() as txn:
+        txn.put("challenges", {"seen": {f"{n:064x}": n for n in range(t4.identity.MAX_CHALLENGES)}})
+    assert _protected(adapter, "maya", "brand-new") == {"decision": "deny"}
+    from t4.audit.log import AuditLog
+    assert AuditLog(adapter.state_dir / "audit", None).entries()[-1]["rule"] == "CRY-CHALLENGE-CAPACITY"
+    provision(adapter)  # a new generation starts empty
+    assert "proof" in _protected(adapter, "maya", "brand-new")

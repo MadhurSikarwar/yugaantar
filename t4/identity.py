@@ -48,9 +48,10 @@ MAX_INDEX_ENTRIES = 10_000
 # undone or refused because of this bound: past it, further entries are only counted
 # (``pending_dropped``) and reported as degraded logging, so the gap stays visible.
 MAX_PENDING_AUDIT = MAX_INDEX_ENTRIES
-# Answered protected_read challenges remembered per generation. The oldest is forgotten first, so a
-# challenge older than the newest 10,000 can be answered again (documented limit).
-MAX_CHALLENGES = MAX_INDEX_ENTRIES
+# Answered protected_read challenges remembered per generation (TRACK4_CHALLENGE_POLICY=once). Never
+# forgotten within a generation: when the registry is full, new protected reads are refused (fail
+# closed) until the next setup, instead of evicting old challenges and accepting them again.
+MAX_CHALLENGES = 100_000
 
 
 def identifier_key(identifier: str) -> str:
@@ -168,12 +169,13 @@ class VaultState:
     def challenge_seen(self, challenge_sha256: str) -> bool:
         return challenge_sha256 in self.challenges
 
+    def challenges_full(self) -> bool:
+        return len(self.challenges) >= MAX_CHALLENGES
+
     def remember_challenge(self, challenge_sha256: str) -> None:
-        """Remember an answered challenge (bounded: the oldest is forgotten first)."""
+        """Remember an answered challenge for the rest of this generation (caller checks capacity)."""
         self.challenges[challenge_sha256] = self.next_n
         self.next_n += 1
-        while len(self.challenges) > MAX_CHALLENGES:
-            del self.challenges[min(self.challenges, key=self.challenges.__getitem__)]
 
     def first_record(self, request_id: str) -> dict | None:
         record = self.requests.get(identifier_key(request_id))

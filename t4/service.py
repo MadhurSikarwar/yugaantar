@@ -71,6 +71,7 @@ SETUP_POLICY_ENV = "TRACK4_SETUP_POLICY"  # "once" refuses a second setup; anyth
 # so the judged default keeps answering every authorized request.
 CHALLENGE_POLICY_ENV = "TRACK4_CHALLENGE_POLICY"
 RULE_CHALLENGE_REUSED = "CRY-CHALLENGE-REUSED"
+RULE_CHALLENGE_CAPACITY = "CRY-CHALLENGE-CAPACITY"
 RULE_SETUP = "ADM-SETUP"
 RULE_REVOKE = "ADM-REVOKE"
 RULE_CRYPTO_REJECTED_KEY = "CRY-KEY-REJECTED"
@@ -414,13 +415,14 @@ class VaultService:
                 return {"decision": "deny"}
 
             if os.environ.get(CHALLENGE_POLICY_ENV, "").strip().lower() == "once":
-                if state.challenge_seen(challenge_sha256):
+                if state.challenge_seen(challenge_sha256) or state.challenges_full():
+                    rule = RULE_CHALLENGE_REUSED if state.challenge_seen(challenge_sha256) else RULE_CHALLENGE_CAPACITY
                     entry = self._audit().append(
                         actor=request.actor,
                         action="protected_read",
                         target=request.asset,
                         decision="deny",
-                        rule=RULE_CHALLENGE_REUSED,
+                        rule=rule,
                         request_id=request_id,
                         detail=detail,
                     )
