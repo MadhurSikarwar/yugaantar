@@ -25,17 +25,22 @@ def _principals(path) -> set[str]:
 
 @windows
 def test_the_tool_leaves_only_the_current_user_and_system(tmp_path):
+    # A shared parent whose broad read entry is inherited. Set it here: how a machine's temp folder
+    # is set up varies (GitHub's Windows runner gives new folders explicit private entries).
+    user = "\\".join((os.environ["USERDOMAIN"], os.environ["USERNAME"]))
+    subprocess.run(["icacls", str(tmp_path), "/inheritance:r", "/grant:r", f"{user}:(OI)(CI)F",
+                    "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-545:(OI)(CI)R"], check=True, capture_output=True)
     folder = tmp_path / "state"
     folder.mkdir()
     (folder / "state.key").write_text("x")
     assert "(I)" in _acl(folder)  # inherited from the parent before
+    assert any("users" in name for name in _principals(folder / "state.key"))
     make_private(folder)
     assert "(I)" not in _acl(folder)  # nothing inherited from the shared parent any more
     (folder / "later.txt").write_text("y")  # new files inherit the private rules
     for path in (folder, folder / "state.key", folder / "later.txt"):
         names = _principals(path)
-        user = "\\".join((os.environ["USERDOMAIN"], os.environ["USERNAME"])).lower()
-        expected = {"nt authority\\system", user}
+        expected = {"nt authority\\system", user.lower()}
         assert names == expected
     assert (folder / "state.key").read_text() == "x"  # and the owner can still read it
 
