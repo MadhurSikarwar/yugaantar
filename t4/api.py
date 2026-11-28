@@ -260,12 +260,14 @@ class BackupVaultApi(Protocol):
     """``t4.backup.Vault``: authenticated backups; the verification key is kept apart from them.
 
     ``BackupError(message, damaged=())`` (defined in ``t4.backup``) is raised when no backup
-    verifies or the vault itself is damaged.
+    verifies or the vault itself is damaged. ``key_wrap`` / ``key_unwrap`` let the deployment layer
+    keep the encryption key in an OS keystore; only the wrapped blob is written then.
     """
 
     @classmethod
     def create(cls, key_dir: str | Path, backup_dir: str | Path, subject: str, *,
-               encrypt: bool = False) -> "BackupVaultApi": ...
+               encrypt: bool = False, key_wrap: Callable[[bytes], bytes] | None = None,
+               key_unwrap: Callable[[bytes], bytes] | None = None) -> "BackupVaultApi": ...
 
     def location(self) -> dict[str, str]: ...
 
