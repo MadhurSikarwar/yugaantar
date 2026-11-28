@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -39,26 +40,60 @@ def current_principal() -> str:
     return f"{domain}\\{user}" if domain else user
 
 
+SYSTEM_NAME = "nt authority\\system"
+
+
+def _run(command: list[str]) -> str:
+    try:
+        done = subprocess.run(command, check=True, capture_output=True, timeout=60, text=True, errors="replace")
+    except (subprocess.SubprocessError, FileNotFoundError) as error:
+        raise OSError("the folder's access rules could not be changed") from error
+    return done.stdout
+
+
+def principals(path: Path) -> set[str]:
+    """Every principal that has an access entry on ``path`` (lower case), as icacls lists them."""
+    names = set()
+    for line in _run(["icacls", str(path)]).splitlines():
+        line = line.replace(str(path), "", 1).strip()
+        if not line or line.startswith("Successfully processed"):
+            continue
+        match = re.match(r"(.+?):\(", line)
+        if match:
+            names.add(match.group(1).strip().lower())
+    return names
+
+
 def make_private(directory: Path) -> None:
-    """Replace inherited access rules with: current user and SYSTEM, full control. Raises OSError."""
+    """Allow ONLY the current user and SYSTEM on a folder and everything in it, verified. Raises OSError.
+
+    1. Take ownership (another owner could change the rules back).
+    2. Drop inherited rules and grant the user and SYSTEM full control, inherited by children.
+    3. Remove every other principal's explicit entries (``/grant:r`` alone leaves, for example,
+       an explicit BUILTIN\\Users read entry in place).
+    4. Reset everything inside to inherit from the folder, then check the folder and every file
+       and subfolder: any other principal, or any problem, raises (fail closed).
+    """
     if os.name != "nt":
         return
     path = Path(directory)
     if not path.is_dir() or path.is_symlink() or getattr(os.path, "isjunction", lambda p: False)(path):
         raise OSError("not a real folder")
-    # 1. The folder itself: drop inherited rules, grant the user and SYSTEM (inherited by children).
-    folder = ["icacls", str(path), "/inheritance:r", "/grant:r",
-              f"{current_principal()}:(OI)(CI)F", f"{SYSTEM_SID}:(OI)(CI)F", "/Q"]
-    # 2. Anything already inside: reset to inherit from the now-private folder. (Applying step 1
-    #    with /T would strip files of every rule, because folder-inheritance flags do not apply
-    #    to files.)
-    children = ["icacls", str(path / "*"), "/reset", "/T", "/Q"]
-    try:
-        subprocess.run(folder, check=True, capture_output=True, timeout=60)
-        if any(path.iterdir()):
-            subprocess.run(children, check=True, capture_output=True, timeout=60)
-    except (subprocess.SubprocessError, FileNotFoundError) as error:
-        raise OSError("the folder's access rules could not be changed") from error
+    for child in path.rglob("*"):
+        if child.is_symlink() or getattr(os.path, "isjunction", lambda p: False)(child):
+            raise OSError("a linked folder or file inside: refusing")
+    me = current_principal()
+    allowed = {me.lower(), SYSTEM_NAME}
+    _run(["icacls", str(path), "/setowner", me, "/T", "/C", "/Q"])
+    _run(["icacls", str(path), "/inheritance:r", "/grant:r", f"{me}:(OI)(CI)F", f"{SYSTEM_SID}:(OI)(CI)F", "/Q"])
+    for name in principals(path) - allowed:
+        _run(["icacls", str(path), "/remove", name, "/Q"])
+    if any(path.iterdir()):
+        _run(["icacls", str(path / "*"), "/reset", "/T", "/Q"])
+    for item in (path, *path.rglob("*")):
+        extra = principals(item) - allowed
+        if extra:
+            raise OSError(f"access for {sorted(extra)} remains on {item.name}")
 
 
 def main(argv: list[str] | None = None) -> int:

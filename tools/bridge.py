@@ -141,6 +141,14 @@ class Workspace:
             self.started = False
             for child in self.base.iterdir():
                 shutil.rmtree(child, ignore_errors=True) if child.is_dir() else child.unlink()
+            if os.name == "nt":
+                # Private BEFORE any key or file is written into the workspace (fail closed).
+                from tools.windows_private import make_private
+
+                try:
+                    make_private(self.base)
+                except OSError:
+                    raise BridgeError("workspace_could_not_be_made_private", 500) from None
             self.offset, self.offline, self.checks = 0.0, set(), []
             self.approvals = {}
             self.message_keys, self.message_seq = {}, {}

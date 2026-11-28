@@ -54,3 +54,28 @@ def test_the_tool_is_a_no_op_off_windows(tmp_path, monkeypatch):
     if os.name == "nt":
         pytest.skip("checks the POSIX path")
     make_private(tmp_path)  # does nothing, raises nothing
+
+
+@windows
+def test_an_explicit_broad_grant_is_removed_and_the_result_verified(tmp_path):
+    folder = tmp_path / "state"
+    folder.mkdir()
+    (folder / "state.key").write_text("x")
+    # The audit's probe: an explicit Users read entry that /grant:r alone left in place.
+    subprocess.run(["icacls", str(folder), "/grant", "*S-1-5-32-545:(OI)(CI)R"], check=True, capture_output=True)
+    subprocess.run(["icacls", str(folder / "state.key"), "/grant", "*S-1-5-32-545:R"], check=True, capture_output=True)
+    assert any("users" in name for name in _principals(folder))
+    make_private(folder)
+    for path in (folder, folder / "state.key"):
+        assert not any("users" in name for name in _principals(path))
+
+
+@windows
+def test_a_junction_inside_the_folder_is_refused(tmp_path):
+    folder = tmp_path / "state"
+    folder.mkdir()
+    target = tmp_path / "elsewhere"
+    target.mkdir()
+    subprocess.run(["cmd", "/c", "mklink", "/J", str(folder / "link"), str(target)], check=True, capture_output=True)
+    with pytest.raises(OSError):
+        make_private(folder)
