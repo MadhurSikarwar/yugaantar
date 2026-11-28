@@ -76,6 +76,9 @@ CONTENTS = {"plan": "synthetic plan", "budget": "synthetic budget", "notes": "sy
 DEVICES = (("maya-phone", "maya"), ("noor-tablet", "noor"), ("eve-laptop", "eve"))
 NODES = ("node-a", "node-b", "node-c")
 APPROVER = "ops-lead"
+# Gateway callers the bridge plays (it holds their keys, as their client apps would).
+GATEWAY_CALLERS = (("maya-app", "user", "maya"), ("noor-app", "user", "noor"),
+                   ("ops-console", "admin", None), ("reviewer-ana", "reviewer", None))
 MAX_ROWS = 200
 SIGNATURE_UNCHECKED = {"NODE-STALE-LIST", "NODE-CLOCK-ROLLBACK", "NODE-UNKNOWN-DEVICE",
                        "NODE-KEY-INACTIVE", "NODE-KEY-REVOKED", "NODE-BAD-SIGNATURE"}
@@ -164,6 +167,14 @@ class Workspace:
                 device.enroll(self.authority, self.now())
                 self.devices[device_id] = device
             self.contents = dict(CONTENTS)
+            from t4.gateway import Gateway
+
+            self.gateway = Gateway.create(self.base / "gateway", self.signer, open_log(logs / "gateway"))
+            self.gateway_keys, self.gateway_last = {}, None
+            for caller, role, actor in GATEWAY_CALLERS:
+                public_key, secret_key = self.signer.sig_keygen()
+                self.gateway.enroll(caller, role, public_key, actor=actor)
+                self.gateway_keys[caller] = (public_key, secret_key)
             reply = self.adapter({"op": "setup", "owners": OWNERS, "contents": CONTENTS, "disabled": [],
                                   "key_material": secrets.token_hex(16)})
             if reply != {"ready": True}:
@@ -224,7 +235,8 @@ class Workspace:
             "ungrant": self.ungrant, "explain": self.explain, "alerts": self.alerts,
             "pin": self.pin, "verify": self.verify, "tamper": self.tamper, "detect": self.detect,
             "health": self.health, "backup": self.backup, "restore": self.restore, "message": self.message,
-            "revoke_key": self.revoke_key,
+            "revoke_key": self.revoke_key, "gateway": self.gateway_request,
+            "review": self.review,
         }
         if name not in handlers:
             raise BridgeError("unknown_action")
@@ -429,7 +441,8 @@ class Workspace:
         from t4.store import prepare_state_dir
 
         logs = self.base / "logs"
-        dirs = {"adapter": Path(prepare_state_dir(self.state)) / "audit", "authority": logs / "authority"}
+        dirs = {"adapter": Path(prepare_state_dir(self.state)) / "audit", "authority": logs / "authority",
+                "gateway": logs / "gateway"}
         dirs.update({node_id: logs / node_id for node_id in NODES})
         return dirs
 
@@ -601,6 +614,63 @@ class Workspace:
         return {"summary": f"Authority restored from backup {report.used_id}; revocations and key versions "
                            f"recorded after it were re-applied.{damaged}"}
 
+    # -- authenticated gateway (t4.gateway) ----------------------------------
+
+    def _gateway_send(self, caller: str, op: str, body: dict, *, wrong_key: bool = False) -> tuple[dict, str]:
+        from t4.audit.log import AuditLog
+        from t4.gateway import sign_request
+
+        if caller not in self.gateway_keys:
+            raise BridgeError("unknown_caller")
+        key = self.gateway_keys["ops-console" if wrong_key and caller != "ops-console" else
+                                "maya-app" if wrong_key else caller][1]
+        signed = sign_request(self.signer, key, caller=caller, op=op, body=body,
+                              nonce=secrets.token_hex(16), issued_at=self.now())
+        self.gateway_last = signed
+        reply = self.gateway.handle(signed, self.now(), self.adapter)
+        rule = AuditLog(self.base / "logs" / "gateway", None).entries()[-1]["rule"]
+        return reply, rule
+
+    def gateway_request(self, body: dict) -> dict:
+        """Send a signed request through the gateway as one of its enrolled callers."""
+        from t4.audit.log import AuditLog
+
+        if body.get("replay") is True:
+            if self.gateway_last is None:
+                raise BridgeError("nothing_to_replay")
+            reply = self.gateway.handle(self.gateway_last, self.now(), self.adapter)
+            rule = AuditLog(self.base / "logs" / "gateway", None).entries()[-1]["rule"]
+            return {"summary": f"Replayed the last signed request: {rule}", "rows": [{"rule": rule, "reply": json.dumps(reply)}]}
+        caller, op = body.get("caller"), body.get("op")
+        actor = self._actor(body.get("actor"))
+        if op not in ("read", "audit", "revoke"):
+            raise BridgeError("unsupported_operation")
+        request = ({"actor": actor, "asset": self._asset(body.get("asset")), "request_id": f"gw-{secrets.token_hex(6)}"}
+                   if op == "read" else {"actor": actor} if op == "revoke" else {"request_id": str(body.get("request_id", ""))})
+        reply, rule = self._gateway_send(str(caller), op, request, wrong_key=body.get("wrong_key") is True)
+        return {"summary": f"{caller} → {op}: {rule}", "rows": [{"rule": rule, "reply": json.dumps(reply)[:300]}]}
+
+    def review(self, body: dict) -> dict:
+        """A reviewer signs approve or reject for an alert; the gateway records it as evidence."""
+        from t4.audit.log import AuditLog
+        from t4.gateway import verify_decision
+
+        alert_id, verdict = body.get("alert_id"), body.get("verdict")
+        if not isinstance(alert_id, str) or not alert_id or len(alert_id) > 200 or verdict not in ("approve", "reject"):
+            raise BridgeError("bad_decision")
+        reason = body.get("reason", "")
+        if not isinstance(reason, str) or len(reason) > 300:
+            raise BridgeError("bad_decision")
+        reply, rule = self._gateway_send("reviewer-ana", "decide",
+                                         {"alert_id": alert_id, "verdict": verdict, "reason": reason})
+        rows = []
+        for entry in AuditLog(self.base / "logs" / "gateway", None).find(rule="REV-DECISION"):
+            good = verify_decision(self.signer, self.gateway_keys[entry["actor"]][0], entry) \
+                if entry["actor"] in self.gateway_keys else False
+            rows.append({"alert": entry["target"], "verdict": entry["decision"], "reviewer": entry["actor"],
+                         "signature": "valid" if good else "INVALID", "why": entry["detail"].get("reason", "")})
+        return {"summary": f"Decision {rule}: {verdict} on {alert_id}, signed by reviewer-ana.", "rows": rows}
+
     # -- optional demo layer: signed, encrypted messages ---------------------
 
     def message(self, body: dict) -> dict:
@@ -692,7 +762,8 @@ class Workspace:
 
             adapter_logs = Path(prepare_state_dir(self.state)) / "audit"
             sources = [("adapter", adapter_logs, False)]
-            sources += [(f"authority", self.base / "logs" / "authority", False)]
+            sources += [(f"authority", self.base / "logs" / "authority", False),
+                        ("gateway", self.base / "logs" / "gateway", False)]
             sources += [(node_id, self.base / "logs" / node_id, True) for node_id in NODES]
 
             audit, verifications = [], []
@@ -701,7 +772,7 @@ class Workspace:
                     entries = AuditLog(directory, None).entries()
                 except Exception:  # noqa: BLE001 - a damaged log is reported below, never raised here
                     entries = None
-                if name != "authority" and entries is not None:
+                if name not in ("authority", "gateway") and entries is not None:
                     for entry in entries:
                         if entry["decision"] in ("allow", "deny") and entry["action"] in ("read", "protected_read"):
                             audit.append({"requestId": entry["request_id"], "timestamp": entry["ts"],

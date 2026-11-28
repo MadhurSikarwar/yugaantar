@@ -44,7 +44,7 @@ def test_a_new_world_is_consistent_and_every_log_verifies(ws):
         "node-a": "current", "node-b": "current", "node-c": "current"}
     assert all(n["listVersion"] > 0 and len(n["deviceIds"]) == 3 for n in snap["nodes"])
     chains = [v for v in snap["verifications"] if v["kind"] == "audit-chain"]
-    assert len(chains) == 5 and all(v["outcome"] == "valid" for v in chains)
+    assert len(chains) == 6 and all(v["outcome"] == "valid" for v in chains)  # + the gateway log
     assert not any(v["outcome"] == "invalid" for v in snap["verifications"])
 
 
@@ -362,7 +362,7 @@ def test_snapshot_shows_grants_and_alerts_and_pins_are_files(ws):
     assert any(a["rule"] == "GRD-REPEATED-DENIAL" and a["source"] == "adapter" for a in snap["alerts"])
     act(ws, name="pin")
     pins = sorted(p.name for p in ws.pins_dir.iterdir())
-    assert pins == ["adapter.json", "authority.json", "node-a.json", "node-b.json", "node-c.json"]
+    assert pins == ["adapter.json", "authority.json", "gateway.json", "node-a.json", "node-b.json", "node-c.json"]
     for log_dir in ws._log_dirs().values():  # pins are never kept inside a log folder
         assert log_dir.resolve() not in ws.pins_dir.resolve().parents and log_dir.resolve() != ws.pins_dir.resolve()
     pin = json.loads((ws.pins_dir / "node-a.json").read_text())
@@ -388,3 +388,19 @@ def test_one_key_version_is_revoked_on_every_node_and_survives_a_restore(ws):
 
 def test_the_console_runs_the_adapter_with_the_strict_challenge_policy(ws):
     assert act(ws, name="protected_check", actor="maya", asset="plan")["outcome"] == "valid"
+
+
+def test_the_gateway_authenticates_callers_in_front_of_the_real_adapter(ws):
+    ok = act(ws, name="gateway", caller="maya-app", op="read", actor="maya", asset="plan")
+    assert ok["rows"][0]["rule"] == "GW-FORWARDED" and '"allow"' in ok["rows"][0]["reply"]
+    assert act(ws, name="gateway", caller="maya-app", op="read", actor="noor", asset="budget")["rows"][0]["rule"] == "GW-ACTOR-MISMATCH"
+    assert act(ws, name="gateway", caller="maya-app", op="read", actor="maya", asset="plan",
+               wrong_key=True)["rows"][0]["rule"] == "GW-BAD-SIGNATURE"
+    act(ws, name="gateway", caller="noor-app", op="read", actor="noor", asset="budget")
+    assert act(ws, name="gateway", replay=True)["rows"][0]["rule"] == "GW-REPLAY"
+    assert act(ws, name="gateway", caller="maya-app", op="revoke", actor="noor")["rows"][0]["rule"] == "GW-NOT-PERMITTED"
+    assert act(ws, name="gateway", caller="ops-console", op="revoke", actor="noor")["rows"][0]["rule"] == "GW-FORWARDED"
+    rows = act(ws, name="review", alert_id="authority-7", verdict="reject", reason="no approval on record")["rows"]
+    assert rows == [{"alert": "authority-7", "verdict": "reject", "reviewer": "reviewer-ana",
+                     "signature": "valid", "why": "no approval on record"}]
+    assert {v["id"]: v["outcome"] for v in ws.snapshot()["verifications"]}["chain-gateway"] == "valid"

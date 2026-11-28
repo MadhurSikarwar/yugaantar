@@ -5,7 +5,8 @@ import "./live.css";
 
 const ASSETS = ["plan", "budget", "notes"];
 const ACTORS = ["maya", "noor", "eve"];
-const LOGS = ["adapter", "authority", "node-a", "node-b", "node-c"];
+const LOGS = ["adapter", "authority", "gateway", "node-a", "node-b", "node-c"];
+const CALLERS = ["maya-app", "noor-app", "ops-console"];
 
 type Row = Record<string, string | number>;
 
@@ -102,6 +103,10 @@ export default function LivePanel({ snapshot, refresh, reset }: Props) {
   const [newDevice, setNewDevice] = useState("maya-laptop");
   const [log, setLog] = useState("node-a");
   const [recipient, setRecipient] = useState("maya");
+  const [caller, setCaller] = useState("maya-app");
+  const [gwOp, setGwOp] = useState("read");
+  const [alertId, setAlertId] = useState("");
+  const [verdict, setVerdict] = useState("reject");
   const [message, setMessage] = useState("meet at noon");
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState("");
@@ -438,6 +443,81 @@ export default function LivePanel({ snapshot, refresh, reset }: Props) {
             this synthetic workspace; Start over makes a fresh one.
           </p>
         </fieldset>
+        <fieldset disabled={busy}>
+          <legend>Authenticated gateway (signed callers)</legend>
+          <Pick
+            label="Caller"
+            value={caller}
+            options={plain(CALLERS)}
+            onChange={setCaller}
+          />
+          <Pick
+            label="Operation"
+            value={gwOp}
+            options={plain(["read", "revoke", "audit"])}
+            onChange={setGwOp}
+          />
+          <Pick
+            label="As actor"
+            value={actor}
+            options={plain(ACTORS)}
+            onChange={setActor}
+          />
+          <div className="live-row">
+            {button("Send signed", () =>
+              action("Gateway", {
+                name: "gateway",
+                caller,
+                op: gwOp,
+                actor,
+                asset,
+                request_id: requestId,
+              }),
+            )}
+            {button("Sign with the wrong key", () =>
+              action("Gateway", {
+                name: "gateway",
+                caller,
+                op: gwOp,
+                actor,
+                asset,
+                wrong_key: true,
+              }),
+            )}
+            {button("Replay last request", () =>
+              action("Gateway", { name: "gateway", replay: true }),
+            )}
+          </div>
+          <label>
+            Alert ID to review
+            <input
+              value={alertId || snapshot.alerts[0]?.id || ""}
+              onChange={(e) => setAlertId(e.target.value)}
+              maxLength={200}
+            />
+          </label>
+          <div className="live-row">
+            <Pick
+              label="Verdict"
+              value={verdict}
+              options={plain(["approve", "reject"])}
+              onChange={setVerdict}
+            />
+            {button("Sign decision as reviewer-ana", () =>
+              action("Review", {
+                name: "review",
+                alert_id: alertId || snapshot.alerts[0]?.id || "",
+                verdict,
+                reason: "reviewed in the console",
+              }),
+            )}
+          </div>
+          <p className="live-note">
+            Each caller signs with its own ML-DSA-65 key. A user may act only as
+            its own actor. The judged adapter behind it is unchanged.
+          </p>
+        </fieldset>
+
         <fieldset disabled={busy}>
           <legend>Messages (optional demo layer)</legend>
           <Pick
