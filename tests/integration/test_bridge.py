@@ -266,3 +266,86 @@ def test_http_adapter_errors_carry_only_a_label(http_server):
     status, _, data = fetch(http_server, "POST", "/api/adapter", json.dumps(
         {"op": "read", "actor": 1, "asset": "plan", "request_id": "x"}), JSON)
     assert status == 422 and json.loads(data) == {"error": "adapter_refused_request"}
+
+
+# -- every backend feature reachable from the console -------------------------
+
+
+def test_adapter_audit_explain_and_setup_again(ws):
+    ws.call_adapter({"op": "read", "actor": "maya", "asset": "plan", "request_id": "ui-1"})
+    assert ws.call_adapter({"op": "audit", "request_id": "ui-1"})["rule"] == "POL-ALLOW-OWNER"
+    rows = act(ws, name="explain", request_id="ui-1")["rows"]
+    assert [(r["log"], r["rule"]) for r in rows] == [("adapter", "POL-ALLOW-OWNER")]
+    act(ws, name="setup", disabled=["noor"])
+    assert ws.call_adapter({"op": "read", "actor": "noor", "asset": "budget", "request_id": "ui-2"}) == {"decision": "deny"}
+    assert ws.call_adapter({"op": "audit", "request_id": "ui-2"})["rule"] == "POL-DISABLED"
+
+
+def test_grants_reach_nodes_and_the_detector_flags_the_unapproved_one(ws):
+    act(ws, name="grant", actor="eve", asset="budget", approved=False)
+    act(ws, name="grant", actor="noor", asset="plan", approved=True)
+    act(ws, name="deliver")
+    assert act(ws, name="request", device_id="eve-laptop", node_id="node-b", asset="budget")["rule"] == "NODE-ALLOW-GRANT"
+    assert act(ws, name="request", device_id="noor-tablet", node_id="node-a", asset="plan")["rule"] == "NODE-ALLOW-GRANT"
+    for node_id in ("node-a", "node-c"):
+        act(ws, name="request", device_id="eve-laptop", node_id=node_id, asset="plan")
+    found = {(r["rule"], r["identity"]) for r in act(ws, name="detect")["rows"]}
+    assert ("DET-UNAPPROVED-ROLE-CHANGE", "eve") in found
+    assert ("DET-LATERAL-MOVEMENT", "eve") in found
+    assert not any(identity == "noor" for _rule, identity in found)
+    alerts = {r["rule"] for r in act(ws, name="alerts")["rows"]}
+    assert "DET-UNAPPROVED-ROLE-CHANGE" in alerts
+    act(ws, name="ungrant", actor="eve", asset="budget")
+    act(ws, name="deliver")
+    assert act(ws, name="request", device_id="eve-laptop", node_id="node-b", asset="budget")["decision"] == "deny"
+
+
+def test_a_restore_keeps_a_revocation_made_after_the_backup(ws):
+    act(ws, name="backup")
+    act(ws, name="revoke_actor", actor="maya")
+    act(ws, name="restore")
+    act(ws, name="deliver")
+    assert act(ws, name="request", device_id="maya-phone", node_id="node-a", asset="plan")["rule"] == "NODE-ACTOR-REVOKED"
+
+
+def test_pins_verify_and_a_tampered_log_is_caught_and_refused_by_the_detector(ws):
+    act(ws, name="request", device_id="eve-laptop", node_id="node-a", asset="plan")
+    pinned = act(ws, name="pin")["rows"]
+    assert all(r["pinned"] == "yes" for r in pinned)
+    assert all(r["result"] == "ok" for r in act(ws, name="verify")["rows"])
+    act(ws, name="tamper", log="node-a")
+    rows = {r["log"]: r for r in act(ws, name="verify")["rows"]}
+    assert rows["node-a"]["result"] == "FAILED" and rows["node-a"]["first_bad_entry"] != ""
+    assert rows["node-b"]["result"] == "ok"
+    with pytest.raises(BridgeError) as error:
+        act(ws, name="detect")
+    assert error.value.label == "detector_refused_a_log_that_does_not_verify"
+    assert "pin" in {v["id"]: v for v in ws.snapshot()["verifications"]}["chain-node-b"]["detail"]
+
+
+def test_health_reports_a_consistent_state(ws):
+    rows = act(ws, name="health")["rows"]
+    assert rows[0]["result"] == "ok" and rows[1]["result"] == "ok"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"name": "grant", "actor": "eve", "asset": "payroll"},
+        {"name": "grant", "actor": "Eve!", "asset": "plan"},
+        {"name": "revoke_actor", "actor": ""},
+        {"name": "explain", "request_id": ""},
+        {"name": "tamper", "log": "../state"},
+        {"name": "setup", "disabled": ["mallory"]},
+    ],
+)
+def test_bad_operator_actions_are_refused_with_a_fixed_label(ws, body):
+    with pytest.raises(BridgeError) as error:
+        ws.act(body)
+    assert error.value.status == 400
+
+
+def test_the_messaging_demo_hides_the_text_and_refuses_a_replay(ws):
+    pytest.importorskip("cryptography")
+    rows = act(ws, name="message", sender="noor", recipient="maya", text="meet at noon")["rows"]
+    assert [r["result"] for r in rows] == ["text hidden", "delivered: text matches", "refused"]

@@ -21,8 +21,11 @@ Endpoints (JSON only):
     POST /api/start       build a fresh workspace (synthetic data, temporary directories)
     GET  /api/snapshot    the frontend snapshot, schemaVersion 1
     POST /api/adapter     one adapter request: setup, read, revoke, audit, protected_read
-    POST /api/action      one node-layer action: request, deliver, revoke_device, set_offline,
-                          advance, rotate, enroll, protected_check
+    POST /api/action      one action. Node layer: request, deliver, revoke_device, revoke_actor,
+                          set_offline, advance, rotate, enroll, grant, ungrant, protected_check.
+                          Adapter: setup (run again, optionally disabling actors). Operator:
+                          explain, alerts, pin, verify, tamper (edits a synthetic log on disk),
+                          detect, health, backup, restore.
 
 Safety, stated plainly:
   * It binds to 127.0.0.1 only and refuses a request whose Host header is not the address it
@@ -54,7 +57,7 @@ import sys
 import tempfile
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -72,6 +75,8 @@ OWNERS = {"plan": "maya", "budget": "noor", "notes": "eve"}
 CONTENTS = {"plan": "synthetic plan", "budget": "synthetic budget", "notes": "synthetic notes"}
 DEVICES = (("maya-phone", "maya"), ("noor-tablet", "noor"), ("eve-laptop", "eve"))
 NODES = ("node-a", "node-b", "node-c")
+APPROVER = "ops-lead"
+MAX_ROWS = 200
 SIGNATURE_UNCHECKED = {"NODE-STALE-LIST", "NODE-CLOCK-ROLLBACK", "NODE-UNKNOWN-DEVICE",
                        "NODE-KEY-INACTIVE", "NODE-BAD-SIGNATURE"}
 
@@ -109,6 +114,10 @@ class Workspace:
         self.offset = 0.0
         self.offline: set[str] = set()
         self.checks: list[dict] = []
+        self.pins: dict[str, dict] = {}
+        self.approvals: dict[str, dict] = {}
+        self.message_keys: dict[str, tuple] = {}
+        self.message_seq: dict[str, int] = {}
         self.started_at = time.time()
 
     # -- lifecycle ----------------------------------------------------------
@@ -131,14 +140,21 @@ class Workspace:
             for child in self.base.iterdir():
                 shutil.rmtree(child, ignore_errors=True) if child.is_dir() else child.unlink()
             self.offset, self.offline, self.checks = 0.0, set(), []
+            self.pins, self.approvals = {}, {}
+            self.message_keys, self.message_seq = {}, {}
             self.started_at = time.time()
             self.state = self.base / "adapter-state"
             self.state.mkdir(mode=0o700)
             os.chmod(self.state, 0o700)
             logs = self.base / "logs"
             self.signer = load_signer()
+            # The backup vault keeps its key and its backups apart from each other and from the authority.
+            from t4.backup import Vault
+
+            self.vault = Vault.create(self.base / "vault-key", self.base / "vault-backups", "authority")
             self.authority = Authority.create(self.base / "authority", self.signer, open_log(logs / "authority"),
-                                              freshness=self.freshness, skew=self.skew)
+                                              freshness=self.freshness, skew=self.skew,
+                                              vault=self.vault.location())
             self.nodes = {nid: Node.provision(self.base / nid, self.signer, open_log(logs / nid), node_id=nid,
                                               authority_pk=self.authority.public_key, owners=OWNERS,
                                               contents=CONTENTS, freshness=self.freshness, skew=self.skew)
@@ -195,6 +211,10 @@ class Workspace:
             "revoke_device": self.revoke_device, "set_offline": self.set_offline,
             "advance": self.advance, "rotate": self.rotate, "enroll": self.enroll,
             "protected_check": self.protected_check,
+            "setup": self.setup, "revoke_actor": self.revoke_actor, "grant": self.grant,
+            "ungrant": self.ungrant, "explain": self.explain, "alerts": self.alerts,
+            "pin": self.pin, "verify": self.verify, "tamper": self.tamper, "detect": self.detect,
+            "health": self.health, "backup": self.backup, "restore": self.restore, "message": self.message,
         }
         if name not in handlers:
             raise BridgeError("unknown_action")
@@ -326,6 +346,274 @@ class Workspace:
         del self.checks[:-200]
         return {"outcome": result["outcome"]}
 
+
+    # -- adapter administration ---------------------------------------------
+
+    def setup(self, body: dict) -> dict:
+        """Run the adapter's setup again (a new generation), optionally disabling some actors."""
+        disabled = body.get("disabled", [])
+        actors = sorted(set(OWNERS.values()))
+        if not isinstance(disabled, list) or not all(isinstance(a, str) and a in actors for a in disabled):
+            raise BridgeError("unknown_actor")
+        reply = self.adapter({"op": "setup", "owners": OWNERS, "contents": CONTENTS, "disabled": disabled,
+                              "key_material": secrets.token_hex(16)})
+        note = f"; disabled: {', '.join(disabled)}" if disabled else ""
+        return {**reply, "summary": f"Setup ran again: a new generation, adapter revocations cleared{note}"}
+
+    # -- authority -----------------------------------------------------------
+
+    @staticmethod
+    def _actor(value: object) -> str:
+        if not isinstance(value, str) or not NAME.match(value):
+            raise BridgeError("bad_name")
+        return value
+
+    @staticmethod
+    def _asset(value: object) -> str:
+        if not isinstance(value, str) or value not in CONTENTS:
+            raise BridgeError("bad_asset")
+        return value
+
+    def revoke_actor(self, body: dict) -> dict:
+        actor = self._actor(body.get("actor"))
+        at = self.authority.revoke_actor(actor, self.now())
+        return {"summary": f"Authority revoked {actor} on every device (effective {iso(at)}). "
+                           "Nodes enforce it once they receive the next list."}
+
+    def grant(self, body: dict) -> dict:
+        actor, asset = self._actor(body.get("actor")), self._asset(body.get("asset"))
+        approval_id = ""
+        if body.get("approved") is True:
+            approval_id = f"chg-{len(self.approvals) + 1}"
+            now = datetime.fromtimestamp(self.now(), timezone.utc)
+            self.approvals[approval_id] = {
+                "approval_id": approval_id, "approved_by": APPROVER, "subject": actor,
+                "operation": "grant_role", "role": f"read:{asset}",
+                "scope": [f"{node_id}/{asset}" for node_id in NODES],
+                "valid_from_utc": (now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "valid_until_utc": (now + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")}
+        self.authority.grant(actor, asset, self.now(), approval_id=approval_id, granted_by=APPROVER)
+        how = f"with approval {approval_id}" if approval_id else "with no approval on record"
+        return {"summary": f"{actor} may now read {asset} ({how}). Deliver a list so the nodes learn it."}
+
+    def ungrant(self, body: dict) -> dict:
+        actor, asset = self._actor(body.get("actor")), self._asset(body.get("asset"))
+        self.authority.ungrant(actor, asset, self.now(), granted_by=APPROVER)
+        return {"summary": f"Grant removed: {actor} on {asset}. Deliver a list so the nodes learn it."}
+
+    # -- operator tools ------------------------------------------------------
+
+    def _log_dirs(self) -> dict[str, Path]:
+        from t4.store import prepare_state_dir
+
+        logs = self.base / "logs"
+        dirs = {"adapter": Path(prepare_state_dir(self.state)) / "audit", "authority": logs / "authority"}
+        dirs.update({node_id: logs / node_id for node_id in NODES})
+        return dirs
+
+    def _pin_args(self, name: str) -> tuple[dict | None, bytes | None]:
+        pin = self.pins.get(name)
+        return pin, (bytes.fromhex(pin["public_key"]) if pin else None)
+
+    @staticmethod
+    def _row(name: str, entry: dict) -> dict:
+        detail = entry.get("detail", {})
+        why = detail.get("explanation") or detail.get("reason") or ""
+        return {"log": name, "seq": entry["seq"], "time": entry["ts"], "actor": entry["actor"][:80],
+                "action": entry["action"], "target": entry["target"][:80], "decision": entry["decision"],
+                "rule": entry["rule"], "request_id": entry["request_id"][:80], "why": str(why)[:300]}
+
+    def explain(self, body: dict) -> dict:
+        """Every entry, in every log, that carries this request ID (as ``audit.cli explain`` does)."""
+        from t4.audit.log import AuditLog
+
+        request_id = body.get("request_id")
+        if not isinstance(request_id, str) or not request_id or len(request_id) > 200:
+            raise BridgeError("bad_request_id")
+        rows, damaged = [], []
+        for name, directory in self._log_dirs().items():
+            try:
+                rows += [self._row(name, entry) for entry in AuditLog(directory, None).explain(request_id)]
+            except Exception:  # noqa: BLE001 - a damaged log is named, never read past
+                damaged.append(name)
+        note = f" Could not read: {', '.join(damaged)}." if damaged else ""
+        return {"summary": f"{len(rows)} log {'entry' if len(rows) == 1 else 'entries'} for {request_id}.{note}", "rows": rows[:MAX_ROWS]}
+
+    def alerts(self, body: dict) -> dict:
+        """Alerts from every log, and from the second log that records damage to the adapter's log."""
+        from t4.audit.log import AuditLog
+        from t4.store import prepare_state_dir
+
+        sources = dict(self._log_dirs())
+        sources["adapter-alerts"] = Path(prepare_state_dir(self.state)) / "alerts"
+        rows, damaged = [], []
+        for name, directory in sources.items():
+            if not directory.is_dir():
+                continue
+            try:
+                rows += [self._row(name, entry) for entry in AuditLog(directory, None).alerts()]
+            except Exception:  # noqa: BLE001
+                damaged.append(name)
+        rows.sort(key=lambda row: row["time"], reverse=True)
+        note = f" Could not read: {', '.join(damaged)}." if damaged else ""
+        return {"summary": f"{len(rows)} alert{'' if len(rows) == 1 else 's'}.{note}", "rows": rows[:MAX_ROWS]}
+
+    def pin(self, body: dict) -> dict:
+        """Sign the head of every log that verifies and keep it here, outside the log folders."""
+        from t4.audit.log import AuditLog, load_signer, read_bytes
+
+        rows = []
+        for name, directory in self._log_dirs().items():
+            report = AuditLog(directory, None).verify(*self._pin_args(name))
+            if not report.ok:
+                rows.append({"log": name, "pinned": "no", "why": "the log does not verify, so it was not pinned"})
+                continue
+            head = AuditLog(directory, load_signer(directory)).head()
+            self.pins[name] = dict(head, public_key=read_bytes(directory / "audit.pub").hex())
+            rows.append({"log": name, "pinned": "yes", "seq": head["seq"], "hash": head["hash"][:16] + "…",
+                         "why": ""})
+        done = sum(1 for row in rows if row["pinned"] == "yes")
+        return {"summary": f"Pinned {done} of {len(rows)} logs. The bridge keeps the pins, outside the log folders.",
+                "rows": rows}
+
+    def verify(self, body: dict) -> dict:
+        """Check every log from its first entry, against its pin when there is one (``verify-log``)."""
+        from t4.audit.verify import verify_log
+
+        rows = []
+        for name, directory in self._log_dirs().items():
+            report = verify_log(directory, *self._pin_args(name))
+            rows.append({"log": name, "result": "ok" if report.ok else "FAILED", "entries": report.entries,
+                         "signed_to": report.covered_seq, "pinned": "yes" if name in self.pins else "no",
+                         "first_bad_entry": report.first_bad_seq if report.first_bad_seq is not None else "",
+                         "why": (report.errors[0] if report.errors else "")[:300]})
+        bad = [row["log"] for row in rows if row["result"] != "ok"]
+        return {"summary": f"Verification failed for: {', '.join(bad)}." if bad else "Every log verifies.",
+                "rows": rows}
+
+    def tamper(self, body: dict) -> dict:
+        """Edit one stored decision in a synthetic log file, as someone with disk access could."""
+        dirs = self._log_dirs()
+        name = body.get("log")
+        if not isinstance(name, str) or name not in dirs:
+            raise BridgeError("unknown_log")
+        path = dirs[name] / "audit.jsonl"
+        data = path.read_bytes() if path.is_file() else b""
+        for old, new in ((b'"decision":"deny"', b'"decision":"allow"'),
+                         (b'"decision":"allow"', b'"decision":"deny"')):
+            if old in data:
+                path.write_bytes(data.replace(old, new, 1))
+                return {"summary": f"Edited one entry of the {name} log on disk ({old.decode()} became "
+                                   f"{new.decode()}). Verify the logs to see it caught."}
+        raise BridgeError("nothing_to_edit")
+
+    def detect(self, body: dict) -> dict:
+        """Verify our own signed logs, run the rule-based detector, append its alerts (``detect export``)."""
+        from t4.detect import export as exp
+        from t4.detect.ingest import parse_approvals
+
+        dirs = self._log_dirs()
+        sources = [exp.LogSource(dirs[name], "authority" if name == "authority" else "node", name,
+                                 *self._pin_args(name)) for name in ("authority", *NODES)]
+        register = parse_approvals({"changes": list(self.approvals.values())})
+        try:
+            result = exp.run_export(sources, register, owners={node_id: dict(OWNERS) for node_id in NODES},
+                                    approvers=[APPROVER], alert_log=dirs["authority"])
+        except exp.ExportError:
+            raise BridgeError("detector_refused_a_log_that_does_not_verify") from None
+        rows = [{"severity": alert.severity, "rule": alert.rule, "identity": alert.identity,
+                 "services": ", ".join(alert.services), "why": alert.explanation[:300]}
+                for alert in result.result.alerts]
+        return {"summary": f"Verified {len(result.verified)} logs and {len(result.rows)} events: {len(rows)} alert{'' if len(rows) == 1 else 's'} "
+                           f"({len(result.appended)} new, appended to the signed authority log).",
+                "rows": rows[:MAX_ROWS]}
+
+    def health(self, body: dict) -> dict:
+        """State against audit log, and storage use (``t4.consistency``, ``t4.storage_status``)."""
+        from t4.consistency import check
+        from t4.storage_status import report
+
+        consistent = check(self.state)
+        storage = report(self.state)
+        good = consistent.get("checked") and not consistent.get("problems")
+        rows = [{"check": "State matches the audit log", "result": "ok" if good else "PROBLEM",
+                 "why": "; ".join(consistent.get("problems", []))[:300]},
+                {"check": "Audit logging", "result": storage["audit_logging"],
+                 "why": f"{storage['pending_audit_entries']} entries waiting to be written"},
+                {"check": "State file", "result": f"{storage['state_file_bytes']} bytes",
+                 "why": f"{storage['state_limit_used_percent']}% of the write limit"},
+                {"check": "Audit log", "result": f"{storage['audit_total_bytes']} bytes",
+                 "why": "grows without limit; archive with a pin"}]
+        rows += [{"check": "Warning", "result": "", "why": warning[:300]} for warning in storage["warnings"]]
+        return {"summary": "Health checked." if good else "Health check found a problem.", "rows": rows}
+
+    def backup(self, body: dict) -> dict:
+        number = self.vault.backup(self.authority.store, "authority", self.now())
+        return {"summary": f"Authority backed up (backup {number}). Revocations made after it are kept in the "
+                           "vault ledger, so a restore cannot undo them."}
+
+    def restore(self, body: dict) -> dict:
+        from t4.backup import BackupError
+
+        try:
+            report = self.vault.restore(self.base / "authority", "authority")
+        except BackupError:
+            raise BridgeError("no_backup_could_be_restored") from None
+        damaged = f" Damaged backups skipped: {len(report.damaged)}." if report.damaged else ""
+        return {"summary": f"Authority restored from backup {report.used_id}; revocations and key versions "
+                           f"recorded after it were re-applied.{damaged}"}
+
+    # -- optional demo layer: signed, encrypted messages ---------------------
+
+    def message(self, body: dict) -> dict:
+        """Send one message with ``demo/messaging.py`` (ML-KEM-768, ML-DSA-65, ChaCha20-Poly1305).
+
+        The receiver's replay counters live in a file (``FileReplayGuard``), so a replay is refused
+        even across bridge restarts within this workspace. Not forward secret; demo layer only.
+        """
+        sender, recipient = self._actor(body.get("sender")), self._actor(body.get("recipient"))
+        actors = set(OWNERS.values())
+        if sender not in actors or recipient not in actors or sender == recipient:
+            raise BridgeError("unknown_actor")
+        text = body.get("text")
+        if not isinstance(text, str) or not text or len(text) > 200:
+            raise BridgeError("bad_text")
+        try:
+            from demo import messaging as m
+
+            m._aead()
+        except Exception:  # noqa: BLE001 - the optional package is missing
+            raise BridgeError("messaging_needs_requirements_demo_txt") from None
+        from t4.crypto import kem, sig
+
+        for actor in (sender, recipient):
+            if actor not in self.message_keys:
+                self.message_keys[actor] = (*sig.sig_keygen(), *kem.keygen())
+        sender_sig_pk, sender_sig_sk, _pk, _sk = self.message_keys[sender]
+        _a, _b, recipient_kem_pk, recipient_kem_sk = self.message_keys[recipient]
+        seq = self.message_seq.get(sender, 0) + 1
+        self.message_seq[sender] = seq
+        wire = json.dumps(m.seal(sender=sender, sender_sig_secret=sender_sig_sk, recipient=recipient,
+                                 recipient_kem_public=recipient_kem_pk, plaintext=text, seq=seq))
+        guard = m.FileReplayGuard(self.base / "messages" / f"{recipient}-replay.json")
+
+        def receive() -> str:
+            try:
+                read = m.open_message(json.loads(wire), recipient=recipient, recipient_kem_secret=recipient_kem_sk,
+                                      expected_sender=sender, sender_sig_public=sender_sig_pk, guard=guard)
+                return "delivered: " + ("text matches" if read == text else "TEXT DIFFERS")
+            except m.MessagingError:
+                return "refused"
+
+        rows = [{"step": "on the wire", "result": "text hidden" if text not in wire else "TEXT VISIBLE",
+                 "why": f"{len(wire)} bytes: ML-KEM-768 capsule, ChaCha20-Poly1305 body, ML-DSA-65 signature"},
+                {"step": f"{recipient} receives it", "result": receive(),
+                 "why": f"signature from {sender} checked, then decrypted"},
+                {"step": "the same message again", "result": receive(),
+                 "why": f"sequence {seq} was already accepted, so a replay is refused"}]
+        return {"summary": f"{sender} sent {recipient} an encrypted, signed message (demo layer, not forward secret).",
+                "rows": rows}
+
     # -- snapshot -----------------------------------------------------------
 
     def snapshot(self) -> dict:
@@ -383,10 +671,12 @@ class Workspace:
                                           "action": f"{entry['action']} @ {name}" if is_node else entry["action"],
                                           "asset": entry["target"] or "(none)",
                                           "decision": entry["decision"], "rule": entry["rule"]})
-                report = verify_log(directory)
+                pin = self.pins.get(name)
+                report = verify_log(directory, pin, bytes.fromhex(pin["public_key"]) if pin else None)
                 if report.ok:
-                    detail = (f"{report.entries} entries, hash chain intact. The signing key was read from the "
-                              f"log folder, not pinned.")
+                    detail = (f"{report.entries} entries, hash chain intact. "
+                              + (f"Matches the pin at entry {pin['seq']} and the pinned public key." if pin else
+                                 "The signing key was read from the log folder, not pinned."))
                     verifications.append({"id": f"chain-{name}", "kind": "audit-chain", "outcome": "valid",
                                           "detail": f"{name}: {detail}"})
                     verifications.append({"id": f"checkpoint-{name}", "kind": "checkpoint",
