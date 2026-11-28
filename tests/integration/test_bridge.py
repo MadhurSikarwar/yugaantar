@@ -421,3 +421,15 @@ def test_a_log_is_archived_and_keeps_verifying(ws):
     assert row["segment"] == 1 and row["archived_to_entry"] >= 2
     act(ws, name="request", device_id="maya-phone", node_id="node-a", asset="plan")
     assert {r["log"]: r["result"] for r in act(ws, name="verify")["rows"]}["node-a"] == "ok"
+
+
+def test_revoking_a_key_version_raises_no_detector_alert_against_the_authority(ws):
+    act(ws, name="revoke_key", device_id="eve-laptop")
+    act(ws, name="deliver")
+    assert not any(r["identity"] == "authority" for r in act(ws, name="detect")["rows"])
+
+
+def test_replay_resends_the_last_genuine_gateway_request(ws):
+    act(ws, name="gateway", caller="maya-app", op="read", actor="maya", asset="plan")
+    act(ws, name="gateway", caller="maya-app", op="read", actor="maya", asset="plan", wrong_key=True)
+    assert act(ws, name="gateway", replay=True)["rows"][0]["rule"] == "GW-REPLAY"

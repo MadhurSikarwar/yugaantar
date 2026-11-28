@@ -652,7 +652,8 @@ class Workspace:
                                 "maya-app" if wrong_key else caller][1]
         signed = sign_request(self.signer, key, caller=caller, op=op, body=body,
                               nonce=secrets.token_hex(16), issued_at=self.now())
-        self.gateway_last = signed
+        if not wrong_key:
+            self.gateway_last = signed  # "replay" re-sends the last genuine request
         reply = self.gateway.handle(signed, self.now(), self.adapter)
         rule = AuditLog(self.base / "logs" / "gateway", None).entries()[-1]["rule"]
         return reply, rule

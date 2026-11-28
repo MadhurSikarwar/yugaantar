@@ -64,7 +64,7 @@ UNVERIFIED_ACTOR = "(unverified)"
 # attacker-chosen, so grouping by it would let a prober avoid movement chaining by changing it.
 UNVERIFIED_SESSION = "(unverified)"
 # Key events other than grants are routine administration by the authority.
-ADMIN_ACTIONS = frozenset({"enroll", "rotate", "rotate_reschedule", "revoke_device", "revoke_actor"})
+ADMIN_ACTIONS = frozenset({"enroll", "rotate", "rotate_reschedule", "revoke_device", "revoke_actor", "revoke_key"})
 LOG_SUBDIR = "log"
 # Node rules meaning "valid signature, but not sent by its signer to this node
 # at this time": attributing these to the signer would let anyone who captures
