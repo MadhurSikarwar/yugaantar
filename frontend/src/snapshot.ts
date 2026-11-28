@@ -3,7 +3,8 @@ export interface Device {
   id: string;
   owner: string;
   keyVersion: number;
-  state: "active" | "revoked";
+  /** no-usable-key: enrolled and not revoked, but every key version in force is revoked. */
+  state: "active" | "revoked" | "no-usable-key";
 }
 export interface NodeRecord {
   id: string;
@@ -129,7 +130,7 @@ export function parseSnapshot(text: string): Snapshot {
         id: str(d.id, "id"),
         owner: str(d.owner, "owner"),
         keyVersion: num(d.keyVersion, "keyVersion"),
-        state: choice(d.state, ["active", "revoked"], "state"),
+        state: choice(d.state, ["active", "revoked", "no-usable-key"], "state"),
       })),
       (d) => d.id,
       "devices",

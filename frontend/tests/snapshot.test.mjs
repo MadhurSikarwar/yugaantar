@@ -136,3 +136,7 @@ test("grants and alerts are optional and validated", () => {
     parse({ ...empty(), alerts: [{ id: "a", timestamp: "yesterday", rule: "R", source: "s", identity: "i", detail: "d" }] }),
   );
 });
+test("a device with no usable key is a valid, distinct state", () => {
+  const device = { id: "d", owner: "o", keyVersion: 2, state: "no-usable-key" };
+  assert.equal(parse({ ...empty(), devices: [device] }).devices[0].state, "no-usable-key");
+});

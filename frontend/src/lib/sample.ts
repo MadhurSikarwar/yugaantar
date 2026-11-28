@@ -70,7 +70,7 @@ export function sampleSnapshot(): Snapshot {
       { id: "maya-laptop", owner: "maya", keyVersion: 1, state: "active" },
       { id: "noor-laptop", owner: "noor", keyVersion: 3, state: "active" },
       { id: "ravi-tablet", owner: "ravi", keyVersion: 2, state: "active" },
-      { id: "eve-laptop", owner: "eve", keyVersion: 1, state: "active" },
+      { id: "eve-laptop", owner: "eve", keyVersion: 1, state: "no-usable-key" },
     ],
     nodes: [
       {

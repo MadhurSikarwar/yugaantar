@@ -69,7 +69,7 @@ const views: Record<
       ["keyVersion", "Key version"],
       ["state", "Reported state"],
     ],
-    filters: ["active", "revoked"],
+    filters: ["active", "no-usable-key", "revoked"],
     search: "Search devices or owners",
     note: "Enrollment, rotation and revocation happen in the backend. This view only inspects loaded records.",
   },

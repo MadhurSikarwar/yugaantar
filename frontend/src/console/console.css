@@ -523,7 +523,8 @@ kbd {
 }
 .badge-stale,
 .badge-offline,
-.badge-not-checked {
+.badge-not-checked,
+.badge-no-usable-key {
   border-color: var(--amber-ink);
   color: var(--amber-ink);
 }
@@ -893,7 +894,12 @@ dialog::backdrop {
   .console
     tbody
     tr:hover
-    :is(.badge-stale, .badge-offline, .badge-not-checked) {
+    :is(
+      .badge-stale,
+      .badge-offline,
+      .badge-not-checked,
+      .badge-no-usable-key
+    ) {
     background: var(--bg);
     color: var(--amber-ink);
   }

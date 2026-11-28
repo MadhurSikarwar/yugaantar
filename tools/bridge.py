@@ -845,9 +845,10 @@ class Workspace:
                 keys = device["keys"]
                 usable = [key for key in keys if key["activate_at"] <= now] or keys
                 revoked = device_id in authority["revoked_devices"] or device["owner"] in authority["revoked_actors"]
-                devices.append({"id": device_id, "owner": device["owner"],
-                                "keyVersion": max(key["version"] for key in usable),
-                                "state": "revoked" if revoked else "active"})
+                current = max(usable, key=lambda key: key["version"])
+                key_revoked = f"{device_id}/{current['version']}" in authority.get("revoked_keys", {})
+                devices.append({"id": device_id, "owner": device["owner"], "keyVersion": current["version"],
+                                "state": "revoked" if revoked else "no-usable-key" if key_revoked else "active"})
 
             nodes = []
             for node_id, node in self.nodes.items():

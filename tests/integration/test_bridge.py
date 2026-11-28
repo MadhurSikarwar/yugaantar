@@ -378,7 +378,8 @@ def test_one_key_version_is_revoked_on_every_node_and_survives_a_restore(ws):
         assert act(ws, name="request", device_id="noor-tablet", node_id=node_id, asset="budget")["rule"] == "NODE-KEY-REVOKED"
     # Only that key: the device is still enrolled, and other devices are untouched.
     assert act(ws, name="request", device_id="maya-phone", node_id="node-a", asset="plan")["decision"] == "allow"
-    assert {d["id"]: d["state"] for d in ws.snapshot()["devices"]}["noor-tablet"] == "active"
+    # Still enrolled and not revoked, but it has no usable key until it rotates.
+    assert {d["id"]: d["state"] for d in ws.snapshot()["devices"]}["noor-tablet"] == "no-usable-key"
     # Rotating to a new version restores access once the new key is active.
     act(ws, name="rotate", device_id="noor-tablet")
     act(ws, name="advance", seconds=70)
@@ -463,3 +464,9 @@ def test_pins_inside_the_workspace_are_refused(tmp_path):
     workspace.start()
     with pytest.raises(BridgeError):
         workspace.act({"name": "pin"})
+
+
+def test_a_device_whose_current_key_is_revoked_is_not_shown_active(ws):
+    act(ws, name="revoke_key", device_id="noor-tablet")
+    states = {d["id"]: d["state"] for d in ws.snapshot()["devices"]}
+    assert states["noor-tablet"] == "no-usable-key" and states["maya-phone"] == "active"
