@@ -724,6 +724,17 @@ export default function Console() {
                               {formatDate(a.timestamp)}
                             </span>
                             <p>{a.detail}</p>
+                            {a.review && (
+                              <span className={`review review-${a.review}`}>
+                                Review:{" "}
+                                {a.review === "conflict"
+                                  ? "conflicting decisions"
+                                  : a.review}
+                                {a.reviewers
+                                  ? ` (signed by ${a.reviewers})`
+                                  : ""}
+                              </span>
+                            )}
                           </li>
                         ))}
                       </ol>

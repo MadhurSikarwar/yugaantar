@@ -986,3 +986,11 @@ dialog::backdrop {
 .grant-none {
   color: var(--amber-ink);
 }
+.alert-list .review {
+  margin-top: 6px;
+  font-weight: 600;
+  color: var(--fg);
+}
+.alert-list .review-conflict {
+  color: var(--amber-ink);
+}

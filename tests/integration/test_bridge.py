@@ -401,9 +401,15 @@ def test_the_gateway_authenticates_callers_in_front_of_the_real_adapter(ws):
     assert act(ws, name="gateway", replay=True)["rows"][0]["rule"] == "GW-REPLAY"
     assert act(ws, name="gateway", caller="maya-app", op="revoke", actor="noor")["rows"][0]["rule"] == "GW-NOT-PERMITTED"
     assert act(ws, name="gateway", caller="ops-console", op="revoke", actor="noor")["rows"][0]["rule"] == "GW-FORWARDED"
-    rows = act(ws, name="review", alert_id="authority-7", verdict="reject", reason="no approval on record")["rows"]
-    assert rows == [{"alert": "authority-7", "verdict": "reject", "reviewer": "reviewer-ana",
-                     "signature": "valid", "why": "no approval on record"}]
+    assert act(ws, name="review", alert_id="authority-999", verdict="reject")["summary"].startswith("Decision GW-UNKNOWN-ALERT")
+    for _ in range(5):  # five denials raise a real alert to review
+        ws.call_adapter({"op": "read", "actor": "eve", "asset": "plan", "request_id": "x"})
+    alert = next(a for a in ws.snapshot()["alerts"] if a["rule"] == "GRD-REPEATED-DENIAL")
+    rows = act(ws, name="review", alert_id=alert["id"], verdict="reject", reason="probing")["rows"]
+    assert rows == [{"alert": alert["id"], "verdict": "reject", "reviewer": "reviewer-ana",
+                     "signature": "valid", "why": "probing"}]
+    reviewed = next(a for a in ws.snapshot()["alerts"] if a["id"] == alert["id"])
+    assert reviewed["review"] == "reject" and reviewed["reviewers"] == "reviewer-ana"
     assert {v["id"]: v["outcome"] for v in ws.snapshot()["verifications"]}["chain-gateway"] == "valid"
 
 

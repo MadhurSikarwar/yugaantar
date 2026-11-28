@@ -10,8 +10,11 @@ Why it exists
 Roles and what each may do
     user      read, protected_read, audit -- and only as the actor bound to its key
     admin     setup, revoke, audit
-    reviewer  decide: approve or reject an alert ({"alert_id", "verdict", "reason"}); the signed
-              decision is kept as evidence
+    reviewer  decide: approve or reject an alert ({"alert_id", "evidence", "verdict", "reason"}),
+              where ``evidence`` is the SHA-256 of the alert record being judged. The gateway
+              refuses an unknown alert (GW-UNKNOWN-ALERT) or changed evidence (GW-STALE-EVIDENCE),
+              refuses the same verdict twice (GW-DUPLICATE-DECISION) and records a different later
+              verdict as REV-CONFLICT, never as a silent change. A decision never grants access.
 
 Checks, in this order (each failure has its own rule ID in the gateway's signed log; the caller
 only ever receives ``{"error": "refused"}``):
@@ -131,13 +134,20 @@ class Gateway:
 
     # -- requests -------------------------------------------------------------
 
-    def handle(self, signed: Any, now: float, forward: Callable[[dict], dict]) -> dict:
-        """Check a signed request; forward it to the adapter or record a decision. Never raises."""
+    def handle(self, signed: Any, now: float, forward: Callable[[dict], dict],
+               alert_lookup: Callable[[str], str | None] | None = None) -> dict:
+        """Check a signed request; forward it or record a decision. Never raises.
+
+        ``alert_lookup(alert_id)`` returns the SHA-256 of that alert's current record, or ``None``
+        when no such alert exists; without it reviewer decisions are refused.
+        """
         try:
             check_time(now)
             with self.store.locked() as txn:
                 record = require_record(txn.get(RECORD), "gateway")
                 rule, body, signature = self._judge(record, signed, now)
+                if rule == "GW-OK" and body["op"] == "decide":
+                    rule = self._judge_decision(record, body["body"], alert_lookup)
                 request_id = hashlib.sha256(canonical(signed if isinstance(signed, dict) else str(signed))).hexdigest()[:32]
                 caller = body["caller"] if body else "unknown"
                 op = body["op"] if body else "unknown"
@@ -148,7 +158,7 @@ class Gateway:
                     return dict(REFUSED)
                 txn.put(RECORD, record)  # the nonce is spent before anything is forwarded
                 if op == "decide":
-                    return self._record_decision(body, signature, request_id)
+                    return self._record_decision(record, body, signature, request_id, txn)
                 self.log.append(actor=caller, action=op, target="adapter", decision="allow", rule="GW-FORWARDED",
                                 request_id=request_id, detail={"actor": str(body["body"].get("actor", ""))[:200]})
             return forward({**body["body"], "op": op})
@@ -196,21 +206,49 @@ class Gateway:
             return "GW-MALFORMED", body, signature
         return "GW-OK", body, signature
 
-    def _record_decision(self, body: dict, signature: bytes, request_id: str) -> dict:
+    @staticmethod
+    def _judge_decision(record: dict, decision: dict, alert_lookup) -> str:
+        current = alert_lookup(decision["alert_id"]) if alert_lookup is not None else None
+        if current is None:
+            return "GW-UNKNOWN-ALERT"
+        if decision["evidence"] != current:
+            return "GW-STALE-EVIDENCE"
+        earlier = record.setdefault("reviews", {}).get(decision["alert_id"])
+        if earlier and decision["verdict"] in earlier["verdicts"]:
+            return "GW-DUPLICATE-DECISION"
+        return "GW-OK"
+
+    def _record_decision(self, record: dict, body: dict, signature: bytes, request_id: str, txn) -> dict:
         decision = body["body"]
+        reviews = record.setdefault("reviews", {})
+        earlier = reviews.get(decision["alert_id"])
+        rule = "REV-CONFLICT" if earlier else "REV-DECISION"
         self.log.append(actor=body["caller"], action="review", target=decision["alert_id"],
-                        decision=decision["verdict"], rule="REV-DECISION", request_id=request_id,
-                        detail={"reason": decision["reason"], "nonce": body["nonce"],
+                        decision=decision["verdict"], rule=rule, request_id=request_id,
+                        detail={"reason": decision["reason"], "evidence": decision["evidence"], "nonce": body["nonce"],
                                 "issued_at": json.dumps(body["issued_at"]), "signature": signature.hex()})
-        return {"recorded": True, "alert_id": decision["alert_id"], "verdict": decision["verdict"]}
+        entry = reviews.setdefault(decision["alert_id"], {"verdicts": [], "reviewers": []})
+        entry["verdicts"].append(decision["verdict"])
+        entry["reviewers"].append(body["caller"])
+        txn.put(RECORD, record)
+        status = "conflict" if len(set(entry["verdicts"])) > 1 else decision["verdict"]
+        return {"recorded": True, "alert_id": decision["alert_id"], "verdict": decision["verdict"], "status": status}
+
+    def review_status(self) -> dict[str, dict]:
+        """Durable review status per alert: approve, reject or conflict, with the reviewers."""
+        with self.store.locked() as txn:
+            record = require_record(txn.get(RECORD), "gateway")
+        return {alert: {"status": "conflict" if len(set(r["verdicts"])) > 1 else r["verdicts"][0],
+                        "reviewers": list(r["reviewers"])} for alert, r in record.get("reviews", {}).items()}
 
 
 def _valid_decision(decision: Mapping[str, Any]) -> bool:
     try:
         check_text(decision["alert_id"])
-        reason = decision["reason"]
+        reason, evidence = decision["reason"], decision["evidence"]
         return (decision["verdict"] in VERDICTS and isinstance(reason, str) and len(reason) <= MAX_REASON
-                and set(decision) == {"alert_id", "verdict", "reason"})
+                and isinstance(evidence, str) and len(evidence) == 64
+                and set(decision) == {"alert_id", "evidence", "verdict", "reason"})
     except (KeyError, NodeError):
         return False
 
@@ -227,7 +265,8 @@ def verify_decision(signer: Signer, public_key: bytes, entry: Mapping[str, Any])
     try:
         detail = entry["detail"]
         body = {"type": REQUEST_TYPE, "caller": entry["actor"], "op": "decide",
-                "body": {"alert_id": entry["target"], "verdict": entry["decision"], "reason": detail["reason"]},
+                "body": {"alert_id": entry["target"], "evidence": detail["evidence"], "verdict": entry["decision"],
+                         "reason": detail["reason"]},
                 "nonce": detail["nonce"], "issued_at": json.loads(detail["issued_at"])}
         return signer.verify(public_key, canonical(body), bytes.fromhex(detail["signature"])) is True
     except Exception:  # noqa: BLE001

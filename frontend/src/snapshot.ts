@@ -43,6 +43,11 @@ export interface AlertRecord {
   source: string;
   identity: string;
   detail: string;
+  /** SHA-256 of the alert record a reviewer's signed decision is bound to. */
+  evidence?: string;
+  /** Durable review status from signed reviewer decisions. */
+  review?: "approve" | "reject" | "conflict";
+  reviewers?: string;
 }
 export interface Snapshot {
   schemaVersion: 1;
@@ -196,6 +201,21 @@ export function parseSnapshot(text: string): Snapshot {
               source: str(a.source, "source"),
               identity: str(a.identity, "identity"),
               detail: str(a.detail, "detail"),
+              ...(a.evidence === undefined
+                ? {}
+                : { evidence: str(a.evidence, "evidence") }),
+              ...(a.review === undefined
+                ? {}
+                : {
+                    review: choice<"approve" | "reject" | "conflict">(
+                      a.review,
+                      ["approve", "reject", "conflict"],
+                      "review",
+                    ),
+                  }),
+              ...(a.reviewers === undefined
+                ? {}
+                : { reviewers: str(a.reviewers, "reviewers") }),
             })),
             (a) => a.id,
             "alerts",

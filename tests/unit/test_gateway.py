@@ -25,9 +25,11 @@ def world(tmp_path):
         forwarded.append(request)
         return {"forwarded": request["op"]}
 
+    evidence = {"authority-4": "a" * 64}
+
     def send(caller, op, body, *, nonce="n1", at=NOW, key=None):
         signed = sign_request(signer, key or keys[caller][1], caller=caller, op=op, body=body, nonce=nonce, issued_at=at)
-        return gateway.handle(signed, NOW, forward), signed
+        return gateway.handle(signed, NOW, forward, evidence.get), signed
 
     return {"gateway": gateway, "send": send, "forwarded": forwarded, "keys": keys, "signer": signer,
             "log": tmp_path / "gw-log"}
@@ -69,16 +71,34 @@ def test_roles_limit_operations(world):
 
 
 def test_a_reviewer_decision_is_signed_recorded_and_checkable_later(world):
-    reply, _ = world["send"]("ana", "decide", {"alert_id": "authority-4", "verdict": "reject", "reason": "no approval"})
-    assert reply == {"recorded": True, "alert_id": "authority-4", "verdict": "reject"}
+    reply, _ = world["send"]("ana", "decide", {"alert_id": "authority-4", "evidence": "a" * 64, "verdict": "reject",
+                                               "reason": "no approval"})
+    assert reply == {"recorded": True, "alert_id": "authority-4", "verdict": "reject", "status": "reject"}
     entry = [e for e in AuditLog(world["log"], None).entries() if e["rule"] == "REV-DECISION"][0]
     pk = world["keys"]["ana"][0]
     assert verify_decision(world["signer"], pk, entry)
     altered = {**entry, "decision": "approve"}
     assert not verify_decision(world["signer"], pk, altered)
     assert not verify_decision(world["signer"], world["keys"]["ops"][0], entry)
-    world["send"]("ana", "decide", {"alert_id": "a", "verdict": "maybe", "reason": ""}, nonce="n5")
+    world["send"]("ana", "decide", {"alert_id": "a", "evidence": "a" * 64, "verdict": "maybe", "reason": ""}, nonce="n5")
     assert rules(world)[-1] == "GW-MALFORMED"
+
+
+def test_decisions_need_a_real_alert_current_evidence_and_no_repeat(world):
+    send = world["send"]
+    send("ana", "decide", {"alert_id": "nope-1", "evidence": "a" * 64, "verdict": "reject", "reason": ""}, nonce="d1")
+    assert rules(world)[-1] == "GW-UNKNOWN-ALERT"
+    send("ana", "decide", {"alert_id": "authority-4", "evidence": "b" * 64, "verdict": "reject", "reason": ""}, nonce="d2")
+    assert rules(world)[-1] == "GW-STALE-EVIDENCE"
+    send("ana", "decide", {"alert_id": "authority-4", "evidence": "a" * 64, "verdict": "reject", "reason": ""}, nonce="d3")
+    assert rules(world)[-1] == "REV-DECISION"
+    send("ana", "decide", {"alert_id": "authority-4", "evidence": "a" * 64, "verdict": "reject", "reason": ""}, nonce="d4")
+    assert rules(world)[-1] == "GW-DUPLICATE-DECISION"
+    reply, _ = send("ana", "decide", {"alert_id": "authority-4", "evidence": "a" * 64, "verdict": "approve",
+                                       "reason": "changed my mind"}, nonce="d5")
+    assert rules(world)[-1] == "REV-CONFLICT" and reply["status"] == "conflict"
+    assert world["gateway"].review_status()["authority-4"]["status"] == "conflict"
+    assert world["forwarded"] == []  # a decision never reaches the adapter or grants anything
 
 
 def test_enrolment_refuses_duplicates_and_unbound_users(world):

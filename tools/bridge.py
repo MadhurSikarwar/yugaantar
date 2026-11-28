@@ -708,9 +708,28 @@ class Workspace:
                               nonce=secrets.token_hex(16), issued_at=self.now())
         if not wrong_key:
             self.gateway_last = signed  # "replay" re-sends the last genuine request
-        reply = self.gateway.handle(signed, self.now(), self.adapter)
+        reply = self.gateway.handle(signed, self.now(), self.adapter, self.alert_evidence)
         rule = AuditLog(self.base / "logs" / "gateway", None).entries()[-1]["rule"]
         return reply, rule
+
+    def alert_evidence(self, alert_id: str) -> str | None:
+        """SHA-256 of the alert record ``<log>-<seq>`` as it is now, or ``None`` if there is no such alert."""
+        from t4.audit.log import AuditLog, canonical
+
+        name, _, seq = str(alert_id).rpartition("-")
+        sources = dict(self._log_dirs())
+        from t4.store import prepare_state_dir
+
+        sources["adapter-alerts"] = Path(prepare_state_dir(self.state)) / "alerts"
+        if name not in sources or not seq.isdigit() or not sources[name].is_dir():
+            return None
+        try:
+            for entry in AuditLog(sources[name], None).alerts():
+                if entry["seq"] == int(seq):
+                    return hashlib.sha256(canonical(entry)).hexdigest()
+        except Exception:  # noqa: BLE001 - a damaged log has no reviewable alert
+            return None
+        return None
 
     def gateway_dispatch(self, request: dict) -> dict:
         """What a verified gateway request may reach: the adapter, or one authority command."""
@@ -736,7 +755,7 @@ class Workspace:
 
         with self.lock:
             self.need_started()
-            reply = self.gateway.handle(body.get("signed"), self.now(), self.gateway_dispatch)
+            reply = self.gateway.handle(body.get("signed"), self.now(), self.gateway_dispatch, self.alert_evidence)
             rule = AuditLog(self.base / "logs" / "gateway", None).entries()[-1]["rule"]
         return {"reply": reply, "rule": rule}
 
@@ -770,10 +789,12 @@ class Workspace:
         reason = body.get("reason", "")
         if not isinstance(reason, str) or len(reason) > 300:
             raise BridgeError("bad_decision")
+        evidence = self.alert_evidence(alert_id) or "0" * 64  # an unknown alert is refused by the gateway
         reply, rule = self._gateway_send("reviewer-ana", "decide",
-                                         {"alert_id": alert_id, "verdict": verdict, "reason": reason})
+                                         {"alert_id": alert_id, "evidence": evidence, "verdict": verdict, "reason": reason})
         rows = []
-        for entry in AuditLog(self.base / "logs" / "gateway", None).find(rule="REV-DECISION"):
+        found = AuditLog(self.base / "logs" / "gateway", None).find(action="review")
+        for entry in found:
             good = verify_decision(self.signer, self.gateway_keys[entry["actor"]][0], entry) \
                 if entry["actor"] in self.gateway_keys else False
             rows.append({"alert": entry["target"], "verdict": entry["decision"], "reviewer": entry["actor"],
@@ -965,10 +986,16 @@ class Workspace:
             grants = [{"actor": grant["actor"], "asset": grant["asset"],
                        **({"approvalId": grant["approval_id"]} if grant.get("approval_id") else {})}
                       for _key, grant in sorted(authority["grants"].items())]
-            alerts = [{"id": f"{row['log']}-{row['seq']}", "timestamp": row["time"], "rule": row["rule"],
-                       "source": row["log"], "identity": row["actor"] or "(none)",
-                       "detail": row["why"] or row["rule"]}
-                      for row in self.alerts({})["rows"]]
+            reviews = self.gateway.review_status()
+            alerts = []
+            for row in self.alerts({})["rows"]:
+                alert_id = f"{row['log']}-{row['seq']}"
+                review = reviews.get(alert_id)
+                alerts.append({"id": alert_id, "timestamp": row["time"], "rule": row["rule"], "source": row["log"],
+                               "identity": row["actor"] or "(none)", "detail": row["why"] or row["rule"],
+                               **({"evidence": evidence} if (evidence := self.alert_evidence(alert_id)) else {}),
+                               **({"review": review["status"], "reviewers": ", ".join(review["reviewers"])}
+                                  if review else {})})
             return {"schemaVersion": 1, "capturedAt": iso(time.time()), "devices": devices, "nodes": nodes,
                     "audit": audit[-MAX_AUDIT_ROWS:], "verifications": verifications[:MAX_AUDIT_ROWS],
                     "grants": grants[:MAX_AUDIT_ROWS], "alerts": alerts[:MAX_AUDIT_ROWS],
