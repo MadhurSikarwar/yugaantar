@@ -268,18 +268,31 @@ def group_key(event: Event, cfg: DetectConfig) -> tuple[str, ...]:
     return tuple(getattr(event, name) for name in cfg.movement_group_by)
 
 
+def linked(previous: Event, event: Event, cfg: DetectConfig) -> bool:
+    """Whether two consecutive events of one group belong to the same movement chain.
+
+    Within W they always do. Up to the longer flow window they do when both carry the same
+    nonempty correlation ID (one flow moving slowly through several services).
+    """
+    gap = event.corrected_time - previous.corrected_time
+    if gap <= timedelta(seconds=cfg.movement_window_s):
+        return True
+    return (cfg.movement_flow_window_s > 0 and bool(event.correlation_id)
+            and event.correlation_id == previous.correlation_id
+            and gap <= timedelta(seconds=cfg.movement_flow_window_s))
+
+
 def movement_chains(candidates: Iterable[Event], cfg: DetectConfig) -> list[list[Event]]:
-    """Split unexpected-edge events into per-group chains, gap at most W."""
+    """Split unexpected-edge events into per-group chains (see ``linked``)."""
     groups: dict[tuple[str, ...], list[Event]] = {}
     for event in candidates:
         groups.setdefault(group_key(event, cfg), []).append(event)
-    window = timedelta(seconds=cfg.movement_window_s)
     chains: list[list[Event]] = []
     for events in groups.values():
         events.sort(key=lambda e: (e.corrected_time, e.receipt_index))
         chain: list[Event] = []
         for event in events:
-            if chain and event.corrected_time - chain[-1].corrected_time > window:
+            if chain and not linked(chain[-1], event, cfg):
                 chains.append(chain)
                 chain = []
             chain.append(event)
@@ -299,14 +312,13 @@ def movement_detection(chain: Sequence[Event], cfg: DetectConfig) -> tuple[Event
     alert is due only once one of those sub-chains reaches N services. The returned evidence is
     that whole sub-chain, connecting events included.
     """
-    window = timedelta(seconds=cfg.movement_window_s)
     arrived: list[Event] = []
     for event in sorted(chain, key=lambda e: e.receipt_index):
         arrived.append(event)
         ordered = sorted(arrived, key=lambda e: (e.corrected_time, e.receipt_index))
         sub: list[Event] = []
         for item in ordered + [None]:
-            if item is None or (sub and item.corrected_time - sub[-1].corrected_time > window):
+            if item is None or (sub and not linked(sub[-1], item, cfg)):
                 if event in sub and len({e.target_service for e in sub}) >= cfg.movement_min_services:
                     return event, sub
                 sub = []

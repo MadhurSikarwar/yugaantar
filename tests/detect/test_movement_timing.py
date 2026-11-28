@@ -12,8 +12,10 @@ from t4.detect.ingest import parse_utc
 from .helpers import events, row, ts
 
 
-def edge(event_id, at, delay, target):
-    return row(event_id, at, delay=delay, target=target, outcome="deny")
+def edge(event_id, at, delay, target, correlation=None):
+    # A correlation ID per event unless given: these tests are about the W window, not flows.
+    return row(event_id, at, delay=delay, target=target, outcome="deny",
+               correlation=correlation or f"flow-{event_id}")
 
 
 def movement(rows):
@@ -61,3 +63,11 @@ def test_a_late_event_that_is_not_needed_stays_later_evidence():
     assert parse_utc(alert.emitted_at) == parse_utc(ts(30.2))
     assert "c" not in alert.initial_event_ids
     assert parse_utc(alert.evidence_complete_at) == parse_utc(ts(90))
+
+
+def test_a_slow_flow_alerts_when_its_second_service_arrives():
+    rows = [edge("a", 1, 0.2, "billing", "flow-x"), edge("b", 140, 0.2, "archive", "flow-x")]
+    _, alerts = movement(rows)
+    assert len(alerts) == 1
+    assert parse_utc(alerts[0].emitted_at) == parse_utc(ts(140.2))
+    assert set(alerts[0].initial_event_ids) == {"a", "b"}

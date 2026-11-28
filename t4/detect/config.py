@@ -39,6 +39,10 @@ class DetectConfig:
     # one group within a chain whose consecutive events are at most W apart.
     movement_min_services: int = 2
     movement_window_s: float = 60.0
+    # Slow movement: consecutive steps that carry the same (nonempty) correlation ID stay in one
+    # chain up to this far apart, so waiting longer than W between steps does not hide a flow.
+    # 0 turns this off (W alone decides).
+    movement_flow_window_s: float = 600.0
     # Events are grouped by these Event attributes for movement chains.
     movement_group_by: tuple[str, ...] = ("actor", "session_id")
 

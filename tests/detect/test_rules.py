@@ -133,9 +133,9 @@ def test_review_requires_same_session():
 
 # --- lateral movement -------------------------------------------------
 
-def _edge(event_id, at, target, outcome="deny", session="sess-w", actor="svc-w"):
+def _edge(event_id, at, target, outcome="deny", session="sess-w", actor="svc-w", correlation=None):
     return row(event_id, at, actor=actor, source="reports", target=target, role="service-reader",
-               outcome=outcome, session=session)
+               outcome=outcome, session=session, correlation=correlation or f"flow-{event_id}")
 
 
 def test_two_services_within_window_is_movement():
@@ -148,6 +148,27 @@ def test_gap_above_window_splits_chain():
     pred, alerts = labels(events(_edge("e1", 0, "billing"), _edge("e2", 61, "archive")))
     assert pred == {"e1": "isolated_denial", "e2": "isolated_denial"}
     assert alerts == []
+
+
+def test_slow_steps_of_one_flow_are_still_movement():
+    """Steps more than W apart stay in one chain when they carry the same correlation ID."""
+    pred, alerts = labels(events(_edge("e1", 0, "billing", correlation="flow-x"),
+                                 _edge("e2", 140, "archive", correlation="flow-x")))
+    assert pred == {"e1": "lateral_movement_candidate", "e2": "lateral_movement_candidate"}
+    assert alerts[0].rule == "DET-LATERAL-MOVEMENT"
+
+
+def test_a_flow_gap_above_the_flow_window_splits_the_chain():
+    pred, _ = labels(events(_edge("e1", 0, "billing", correlation="flow-x"),
+                            _edge("e2", 601, "archive", correlation="flow-x")))
+    assert set(pred.values()) == {"isolated_denial"}
+
+
+def test_the_flow_window_can_be_turned_off():
+    cfg = replace(DEFAULT_CONFIG, movement_flow_window_s=0)
+    pred, _ = labels(events(_edge("e1", 0, "billing", correlation="flow-x"),
+                            _edge("e2", 140, "archive", correlation="flow-x")), cfg=cfg)
+    assert set(pred.values()) == {"isolated_denial"}
 
 
 def test_same_service_twice_is_not_movement():
