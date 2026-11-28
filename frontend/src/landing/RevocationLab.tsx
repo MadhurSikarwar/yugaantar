@@ -22,6 +22,10 @@ export default function RevocationLab() {
   const onScreen = useOnScreen(section);
   const [sim, setSim] = useState(createSim);
   const [running, setRunning] = useState(!reduced);
+  // A reduced-motion preference turned on after the page loaded also stops the simulation.
+  useEffect(() => {
+    if (reduced) setRunning(false);
+  }, [reduced]);
   const [speed, setSpeed] = useState(4);
   useEffect(() => {
     if (!running || !onScreen) return;

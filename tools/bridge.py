@@ -93,6 +93,15 @@ class BridgeError(Exception):
         self.status = status
 
 
+def default_pins_root() -> Path:
+    """A persistent folder for trusted pins, outside every disposable workspace."""
+    if os.name == "nt":
+        base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
+    else:
+        base = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
+    return base / "latticelock" / "pins"
+
+
 def iso(moment: float) -> str:
     return datetime.fromtimestamp(moment, timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
@@ -100,8 +109,12 @@ def iso(moment: float) -> str:
 class Workspace:
     """One synthetic world: an adapter state folder, an authority, three nodes and some devices."""
 
-    def __init__(self, base: Path | None = None, freshness: float = 60.0, skew: float = 2.0) -> None:
+    def __init__(self, base: Path | None = None, freshness: float = 60.0, skew: float = 2.0,
+                 pins_root: Path | None = None) -> None:
         self._own_base = base is None
+        # Pins outlive the workspace: closing or restarting the bridge never erases them.
+        self.pins_root = Path(pins_root) if pins_root is not None else default_pins_root()
+        self.world_id = ""
         if base is None:
             self.base = Path(tempfile.mkdtemp(prefix="t4-bridge-"))
         else:
@@ -151,6 +164,8 @@ class Workspace:
                     raise BridgeError("workspace_could_not_be_made_private", 500) from None
             self.offset, self.offline, self.checks = 0.0, set(), []
             self.approvals = {}
+            # Each new synthetic world gets its own pin folder; earlier worlds' pins stay on disk.
+            self.world_id = f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{secrets.token_hex(4)}"
             self.message_keys, self.message_seq = {}, {}
             self.started_at = time.time()
             self.state = self.base / "adapter-state"
@@ -463,8 +478,8 @@ class Workspace:
 
     @property
     def pins_dir(self) -> Path:
-        """Where pins are kept: inside the workspace, outside every log folder."""
-        return self.base / "pins"
+        """This world's trusted pins: under ``pins_root``, outside the workspace and every log folder."""
+        return self.pins_root / self.world_id
 
     def _pin_of(self, name: str) -> dict | None:
         try:
@@ -523,23 +538,39 @@ class Workspace:
         """Sign the head of every log that verifies and keep it here, outside the log folders."""
         from t4.audit.log import AuditLog, load_signer, read_bytes
 
+        from t4.audit.verify import verify_log
+        from t4.node.state import atomic_write
+
+        workspace = self.base.resolve()
+        pins = self.pins_dir.resolve()
+        if pins == workspace or workspace in pins.parents:
+            raise BridgeError("pins_must_be_outside_the_workspace")
+        self.pins_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if os.name == "nt":
+            from tools.windows_private import make_private
+
+            try:
+                make_private(self.pins_dir)
+            except OSError:
+                raise BridgeError("pins_folder_could_not_be_made_private", 500) from None
         rows = []
         for name, directory in self._log_dirs().items():
-            report = AuditLog(directory, None).verify(*self._pin_args(name))
+            # Advance only from a pin that still checks (as 'audit.cli pin advance'): a log whose
+            # key was replaced, or whose history no longer matches, is never silently re-pinned.
+            archive_dir = self.base / "archive" / name
+            report = verify_log(directory, *self._pin_args(name), archive_dir if archive_dir.is_dir() else None)
             if not report.ok:
-                rows.append({"log": name, "pinned": "no", "why": "the log does not verify, so it was not pinned"})
+                rows.append({"log": name, "pinned": "no",
+                             "why": "the log does not verify against its trusted pin, so the pin was left unchanged"})
                 continue
             head = AuditLog(directory, load_signer(directory)).head()
-            from t4.node.state import atomic_write
-
-            self.pins_dir.mkdir(mode=0o700, exist_ok=True)
             pin = dict(head, public_key=read_bytes(directory / "audit.pub").hex())
             atomic_write(self.pins_dir / f"{name}.json", json.dumps(pin, sort_keys=True).encode("ascii"))
             rows.append({"log": name, "pinned": "yes", "seq": head["seq"], "hash": head["hash"][:16] + "…",
                          "why": ""})
         done = sum(1 for row in rows if row["pinned"] == "yes")
-        return {"summary": f"Pinned {done} of {len(rows)} logs. Pin files are in the workspace's pins folder, "
-                           "outside the log folders (same format as 'audit.cli head --out').",
+        return {"summary": f"Pinned {done} of {len(rows)} logs in {self.pins_dir} (kept after the bridge stops; "
+                           "same format as 'audit.cli head --out').",
                 "rows": rows}
 
     def verify(self, body: dict) -> dict:
@@ -1040,8 +1071,8 @@ def make_handler(workspace: Workspace, static: Path | None, allowed_hosts: set[s
     return Handler
 
 
-def serve(port: int, static: Path | None, base: Path | None, start: bool) -> int:
-    workspace = Workspace(base)
+def serve(port: int, static: Path | None, base: Path | None, start: bool, pins_root: Path | None = None) -> int:
+    workspace = Workspace(base, pins_root=pins_root)
     server = ThreadingHTTPServer(("127.0.0.1", port), make_handler(
         workspace, static, {f"127.0.0.1:{port}", f"localhost:{port}"}))
     try:
@@ -1066,10 +1097,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--static", default=str(ROOT / "frontend" / "dist"), help="built frontend folder")
     parser.add_argument("--workspace", help="keep the synthetic world here (default: a temporary folder)")
     parser.add_argument("--no-start", action="store_true", help="wait for POST /api/start")
+    parser.add_argument("--pins-dir", help="persistent folder for trusted pins (default: your local app-data "
+                                           "folder, latticelock/pins); never inside the workspace")
     args = parser.parse_args(argv)
     static = Path(args.static)
     return serve(args.port, static if static.is_dir() else None,
-                 Path(args.workspace) if args.workspace else None, not args.no_start)
+                 Path(args.workspace) if args.workspace else None, not args.no_start,
+                 Path(args.pins_dir) if args.pins_dir else None)
 
 
 if __name__ == "__main__":

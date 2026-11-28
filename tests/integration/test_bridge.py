@@ -21,7 +21,7 @@ pytestmark = pytest.mark.integration
 
 @pytest.fixture(scope="module")
 def world(tmp_path_factory):
-    workspace = Workspace(tmp_path_factory.mktemp("bridge"))
+    workspace = Workspace(tmp_path_factory.mktemp("bridge"), pins_root=tmp_path_factory.mktemp("pins"))
     yield workspace
 
 
@@ -433,3 +433,33 @@ def test_replay_resends_the_last_genuine_gateway_request(ws):
     act(ws, name="gateway", caller="maya-app", op="read", actor="maya", asset="plan")
     act(ws, name="gateway", caller="maya-app", op="read", actor="maya", asset="plan", wrong_key=True)
     assert act(ws, name="gateway", replay=True)["rows"][0]["rule"] == "GW-REPLAY"
+
+
+def test_pins_survive_the_bridge_closing_and_a_new_world(tmp_path):
+    pins_root = tmp_path / "pins"
+    workspace = Workspace(None, pins_root=pins_root)  # the default temporary workspace
+    workspace.start()
+    workspace.act({"name": "pin"})
+    first = workspace.pins_dir
+    assert len(list(first.glob("*.json"))) == 6
+    workspace.start()  # a new world: a new pin folder; the earlier pins stay
+    assert workspace.pins_dir != first and len(list(first.glob("*.json"))) == 6
+    workspace.close()  # the temporary workspace is deleted, the pins are not
+    assert not workspace.base.exists() and len(list(first.glob("*.json"))) == 6
+
+
+def test_a_pin_is_never_silently_replaced_for_a_rewritten_log(ws):
+    act(ws, name="request", device_id="maya-phone", node_id="node-a", asset="plan")
+    act(ws, name="pin")
+    before = (ws.pins_dir / "node-a.json").read_text()
+    act(ws, name="tamper", log="node-a")
+    rows = {r["log"]: r for r in act(ws, name="pin")["rows"]}
+    assert rows["node-a"]["pinned"] == "no"
+    assert (ws.pins_dir / "node-a.json").read_text() == before
+
+
+def test_pins_inside_the_workspace_are_refused(tmp_path):
+    workspace = Workspace(tmp_path / "w", pins_root=tmp_path / "w" / "pins-inside")
+    workspace.start()
+    with pytest.raises(BridgeError):
+        workspace.act({"name": "pin"})
