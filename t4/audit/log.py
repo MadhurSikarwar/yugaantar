@@ -66,6 +66,9 @@ CHECKPOINT_NAME = "checkpoints.jsonl"
 PUBLIC_KEY_NAME = "audit.pub"
 SECRET_KEY_NAME = "audit.key"
 LOCK_NAME = "audit.lock"
+# After ``archive`` moves a finished segment away, this file holds the signed checkpoint of that
+# segment's last entry. The live log continues the same chain from it (``origin``).
+SEGMENT_NAME = "segment.json"
 
 CHECKPOINT_TYPE = "audit-checkpoint"
 GENESIS_HASH = hashlib.sha256(b"t4-audit-genesis-v1").hexdigest()
@@ -339,6 +342,31 @@ def load_or_create_signer(directory: Path | str) -> MLDSASigner:
     return MLDSASigner(public_key, secret_key)
 
 
+def read_origin(directory: Path | str, public_key: bytes | None) -> tuple[int, str]:
+    """Where the live chain starts: ``(0, GENESIS_HASH)``, or the signed anchor left by ``archive``.
+
+    The anchor is a checkpoint record (seq, hash, ts, sig) signed with the log's own key, so a
+    forged or edited anchor cannot shorten history: it fails here and every reader fails closed.
+    """
+    path = Path(directory) / SEGMENT_NAME
+    data = read_bytes(path)
+    if not data:
+        return 0, GENESIS_HASH
+    try:
+        record = json.loads(data.decode("ascii"))
+        seq, head_hash, ts = record["seq"], record["hash"], record["ts"]
+        signature = bytes.fromhex(record["sig"])
+        if type(seq) is not int or seq < 1 or not isinstance(head_hash, str) or not isinstance(ts, str):
+            raise ValueError
+    except (ValueError, KeyError, TypeError, UnicodeError, RecursionError):
+        raise AuditIntegrityError("the archive anchor is malformed") from None
+    from t4.crypto import sig
+
+    if not public_key or not sig.verify(public_key, checkpoint_message(seq, head_hash, ts), signature):
+        raise AuditIntegrityError("the archive anchor is not signed by this log's key")
+    return seq, head_hash
+
+
 def _listed_ids(entry: dict) -> list:
     """The request IDs an alert refers to, or nothing if the value is not a list."""
     try:
@@ -540,7 +568,7 @@ class AuditLog:
             lines, _partial = _tail(self.log_path, 1)
         except OSError:
             raise AuditError("audit log could not be read") from None
-        return parse_line(lines[-1])["seq"] if lines else 0
+        return parse_line(lines[-1])["seq"] if lines else self._origin()[0]
 
     def newest_value(self, name: str, lines: int = 256) -> int | None:
         """Highest integer ``detail[name]`` among the newest complete entries, or ``None``.
@@ -601,7 +629,8 @@ class AuditLog:
             handle = self.log_path.open("rb") if size else None
         except (OSError, FileNotFoundError):
             raise AuditError("audit log could not be read") from None
-        previous, count, consumed = GENESIS_HASH, 0, 0
+        count, previous = self._origin()
+        consumed = 0
         if handle is not None:
             with handle:
                 while consumed < size:
@@ -615,7 +644,7 @@ class AuditLog:
                     if not raw.endswith(b"\n"):
                         break  # an incomplete last line is ignored
                     entry = parse_line(raw[:-1])
-                    count += 1
+                    count += 1  # starts after the archive anchor, if there is one
                     if entry["seq"] != count or entry["hash"] != entry_hash(entry, previous):
                         raise AuditIntegrityError(f"audit chain is broken at entry {count}")
                     previous = entry["hash"]
@@ -678,6 +707,9 @@ class AuditLog:
         except (ValueError, UnicodeError, KeyError, TypeError, RecursionError):
             raise AuditIntegrityError("malformed checkpoint record") from None
         return record
+
+    def _origin(self) -> tuple[int, str]:
+        return read_origin(self.directory, read_bytes(self.directory / PUBLIC_KEY_NAME))
 
     def _newest_checkpoint(self) -> dict | None:
         lines, _partial = _tail(self.checkpoint_path, 1)
@@ -782,7 +814,7 @@ class AuditLog:
         here (``verify-log`` does that); this detects edits to entries without the signing key.
         """
         newest = self._newest_checkpoint()
-        previous, seq = GENESIS_HASH, 0
+        seq, previous = self._origin()
         try:
             handle = self.log_path.open("rb")
         except FileNotFoundError:
@@ -836,14 +868,15 @@ class AuditLog:
         live service does by itself on every request. See the README's limits section.
 """
         older, newest = self._checkpoint_pair()
-        anchor_seq = older["seq"] if older is not None else 0
-        anchor_hash = older["hash"] if older is not None else GENESIS_HASH
+        origin_seq, origin_hash = self._origin()
+        anchor_seq = older["seq"] if older is not None else origin_seq
+        anchor_hash = older["hash"] if older is not None else origin_hash
         window = 2 * self.checkpoint_every + 2  # 2 intervals of margin
         lines, _partial = _tail(self.log_path, window)
         if not lines:
             if newest is not None:
                 raise AuditIntegrityError("audit log is shorter than a signed checkpoint")
-            return 0, GENESIS_HASH
+            return origin_seq, origin_hash
         parsed = [parse_line(line) for line in lines]
         # The log's own tail (not the anchor) decides whether it's shorter than a
         # checkpoint that claims a higher seq -- check this before anything else, since
@@ -885,11 +918,11 @@ class AuditLog:
         ``checkpoint_seconds`` or more after the newest checkpoint."""
         if seq == 1 or seq % self.checkpoint_every == 0:
             return True
-        if self.checkpoint_seconds is None:
-            return False
         newest = self._newest_checkpoint()
         if newest is None:
-            return True  # a signed log that has no checkpoint at all (for example after a crash)
+            return True  # the first entry of a new segment, or a signed log without any checkpoint
+        if self.checkpoint_seconds is None:
+            return False
         try:
             elapsed = (datetime.fromisoformat(ts.replace("Z", "+00:00"))
                        - datetime.fromisoformat(str(newest["ts"]).replace("Z", "+00:00"))).total_seconds()

@@ -40,6 +40,7 @@ from t4.audit.log import (
     locked,
     parse_line,
     read_bytes,
+    read_origin,
 )
 
 
@@ -97,6 +98,15 @@ def verify_log(
     if pinned_public_key is None:
         warnings.append("public key not pinned: it was read from the log directory")
 
+    # ---- where this segment starts: genesis, or the signed anchor left by ``archive``
+    origin_seq, origin_hash = 0, GENESIS_HASH
+    try:
+        origin_seq, origin_hash = read_origin(folder, key)
+    except AuditIntegrityError as error:
+        fail(str(error), 1)
+    if origin_seq:
+        warnings.append(f"entries 1 to {origin_seq} are in an archived segment: verify it with its own pin")
+
     # ---- checkpoints and the pinned head: signatures first, hash comparison after the stream
     # Streamed one record at a time: each signature is about 6.6 KB of hex, so this file can be as
     # large as the log itself and must not be held in memory.
@@ -141,8 +151,8 @@ def verify_log(
     # ---- entry chain, streamed ----------------------------------------------
     wanted = {seq for _, seq, _, _ in to_compare if seq > 0}
     seen: dict[int, str] = {}  # hash of the entry at each wanted seq (only those are kept)
-    previous = GENESIS_HASH
-    good = 0  # entries that passed, contiguously from the start
+    previous = origin_hash
+    good = origin_seq  # entries that passed, contiguously from the start
     chain_intact = True
     complete_lines = 0
     partial = False
@@ -170,7 +180,7 @@ def verify_log(
                     complete_lines += 1
                     if broke:
                         continue  # only counting the rest, for the incomplete-record position
-                    number = complete_lines
+                    number = origin_seq + complete_lines
                     try:
                         entry = parse_line(raw[:-1])
                     except AuditIntegrityError:
@@ -192,13 +202,16 @@ def verify_log(
             if consumed < log_size and not partial:
                 warnings.append("the log became shorter while it was being verified")
     if partial:
-        fail(f"entry {complete_lines + 1}: incomplete trailing record", complete_lines + 1)
+        fail(f"entry {origin_seq + complete_lines + 1}: incomplete trailing record", origin_seq + complete_lines + 1)
     chain_intact = not broke
 
     def compare(source: str, seq: int, head_hash: str) -> bool:
-        if seq == 0:
-            if head_hash != GENESIS_HASH:
-                fail(f"{source}: wrong starting hash", 1)
+        if seq < origin_seq:
+            warnings.append(f"{source}: entry {seq} is in an archived segment; not checked here")
+            return False
+        if seq == origin_seq:
+            if head_hash != origin_hash:
+                fail(f"{source}: wrong starting hash", origin_seq + 1)
                 return False
             return True
         if seq > good:
@@ -210,7 +223,7 @@ def verify_log(
             return False
         return True
 
-    covered = 0
+    covered = origin_seq  # the anchor itself is a signed checkpoint
     valid_checkpoints = 0
     for source, seq, head_hash, is_checkpoint in to_compare:
         if compare(source, seq, head_hash):
@@ -218,14 +231,14 @@ def verify_log(
             if is_checkpoint:
                 valid_checkpoints += 1
 
-    if checkpoint_count == 0 and pinned_head is None:
+    if checkpoint_count == 0 and pinned_head is None and not origin_seq:
         warnings.append("no signed checkpoint or pinned head: a removed tail cannot be detected")
     elif good > covered:
         warnings.append(f"{good - covered} newest entries are not covered by a checkpoint or pin")
 
     return VerifyReport(
         ok=not errors,
-        entries=good,
+        entries=good - origin_seq,
         checkpoints=valid_checkpoints,
         covered_seq=covered,
         head_hash=previous,

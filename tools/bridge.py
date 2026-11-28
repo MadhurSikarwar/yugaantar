@@ -243,7 +243,7 @@ class Workspace:
             "pin": self.pin, "verify": self.verify, "tamper": self.tamper, "detect": self.detect,
             "health": self.health, "backup": self.backup, "restore": self.restore, "message": self.message,
             "revoke_key": self.revoke_key, "gateway": self.gateway_request,
-            "review": self.review, "session": self.session,
+            "review": self.review, "session": self.session, "archive": self.archive,
         }
         if name not in handlers:
             raise BridgeError("unknown_action")
@@ -548,6 +548,24 @@ class Workspace:
         bad = [row["log"] for row in rows if row["result"] != "ok"]
         return {"summary": f"Verification failed for: {', '.join(bad)}." if bad else "Every log verifies.",
                 "rows": rows}
+
+    def archive(self, body: dict) -> dict:
+        """Archive the finished segment of one log (``t4.audit.archive``); the log continues from a signed anchor."""
+        from t4.audit.archive import archive
+        from t4.audit.log import AuditError
+
+        dirs = self._log_dirs()
+        name = body.get("log")
+        if not isinstance(name, str) or name not in dirs:
+            raise BridgeError("unknown_log")
+        try:
+            result = archive(dirs[name], self.base / "archive" / name)
+        except AuditError:
+            raise BridgeError("archive_refused_the_log_is_empty_or_does_not_verify") from None
+        return {"summary": f"Archived the {name} log up to entry {result['seq']} as segment {result['segment']}; "
+                           "new entries continue the same chain.",
+                "rows": [{"log": name, "segment": result["segment"], "archived_to_entry": result["seq"],
+                          "head": result["hash"][:16] + "…"}]}
 
     def tamper(self, body: dict) -> dict:
         """Edit one stored decision in a synthetic log file, as someone with disk access could."""

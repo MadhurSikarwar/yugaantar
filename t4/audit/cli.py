@@ -67,6 +67,8 @@ def _parser() -> argparse.ArgumentParser:
     explain.add_argument("request_id", nargs="?")
     explain.add_argument("--challenge", help="SHA-256 (hex) of a protected_read challenge")
     commands.add_parser("alerts", help="list alerts")
+    archive = commands.add_parser("archive", help="move the finished segment to an archive folder; the log continues")
+    archive.add_argument("--to", required=True, help="archive folder, outside the log folder")
     return parser
 
 
@@ -179,6 +181,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if report.ok else 1
         if args.command == "pin":
             return _pin(args)
+        if args.command == "archive":
+            from t4.audit.archive import archive
+
+            _emit(archive(args.dir, args.to))
+            return 0
         if args.command == "head":
             if args.out and Path(args.out).exists():
                 print("refusing to overwrite an existing pin; use 'pin advance' to move it forward safely",

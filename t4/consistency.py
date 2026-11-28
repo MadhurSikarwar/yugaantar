@@ -50,9 +50,13 @@ def check(state_dir: Path) -> dict:
         result["problems"].append("the state file could not be read or failed its integrity check")
         return result
     log_generation = log_epoch = entries = 0
+    newest_seq = 0
     try:
-        for entry in AuditLog(effective / "audit", None).iter_entries():
+        log = AuditLog(effective / "audit", None)
+        newest_seq = log.last_seq()  # an archived log starts after its anchor, not at 1
+        for entry in log.iter_entries():
             entries += 1
+            newest_seq = entry["seq"]
             detail = entry.get("detail", {})
             for key, current in (("generation", log_generation), ("epoch", log_epoch)):
                 value = detail.get(key)
@@ -66,7 +70,7 @@ def check(state_dir: Path) -> dict:
         return result
     result.update(checked=True, state={"generation": state_generation, "epoch": state_epoch},
                   audit={"entries": entries, "highest_generation": log_generation, "highest_epoch": log_epoch})
-    if state_generation >= 1 and entries == 0:
+    if state_generation >= 1 and newest_seq == 0:
         result["problems"].append(
             "the state was set up but the audit log has no entries: the log was deleted or emptied, "
             "so nothing here can show whether this state is current")
@@ -79,14 +83,14 @@ def check(state_dir: Path) -> dict:
         else:
             # The service signs a checkpoint at every multiple of the interval, so a log without one
             # at its last multiple has had checkpoints removed (a rebuilt chain would otherwise pass).
-            due = (entries // DEFAULT_CHECKPOINT_EVERY) * DEFAULT_CHECKPOINT_EVERY
+            due = (newest_seq // DEFAULT_CHECKPOINT_EVERY) * DEFAULT_CHECKPOINT_EVERY
             if due and report.covered_seq < due:
                 result["problems"].append(
                     f"the audit log has {entries} entries but is signed only up to entry {report.covered_seq}: "
                     "signed checkpoints are missing")
-    if entries < state_audit_seq:
+    if newest_seq < state_audit_seq:
         result["problems"].append(
-            f"the state has seen audit entry {state_audit_seq} but the log holds only {entries}: "
+            f"the state has seen audit entry {state_audit_seq} but the log ends at {newest_seq}: "
             "audit history was lost")
     if state_generation < log_generation:
         result["problems"].append(

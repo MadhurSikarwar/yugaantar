@@ -437,6 +437,9 @@ export default function LivePanel({ snapshot, refresh, reset }: Props) {
             >
               Edit one entry on disk
             </button>
+            {button("Archive this log", () =>
+              action("Archive", { name: "archive", log }),
+            )}
           </div>
           <p className="live-note">
             Editing a log imitates an attacker with disk access. It changes only

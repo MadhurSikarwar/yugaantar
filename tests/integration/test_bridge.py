@@ -413,3 +413,11 @@ def test_the_session_demo_covers_loss_reordering_restart_and_forward_secrecy(ws)
     assert rows["resend of 2"] == "two"
     assert rows["the original 2 arrives late"] == "refused"
     assert rows["forward secrecy"] == "prekey secrets of delivered messages deleted"
+
+
+def test_a_log_is_archived_and_keeps_verifying(ws):
+    act(ws, name="request", device_id="maya-phone", node_id="node-a", asset="plan")
+    row = act(ws, name="archive", log="node-a")["rows"][0]
+    assert row["segment"] == 1 and row["archived_to_entry"] >= 2
+    act(ws, name="request", device_id="maya-phone", node_id="node-a", asset="plan")
+    assert {r["log"]: r["result"] for r in act(ws, name="verify")["rows"]}["node-a"] == "ok"
