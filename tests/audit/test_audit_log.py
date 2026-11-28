@@ -16,6 +16,7 @@ from t4.audit.log import (
     load_or_create_signer,
     load_signer,
 )
+from t4.audit.verify import verify_log
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -266,7 +267,7 @@ def test_append_once_never_rewrites_existing_history(folder, log):
 def test_append_catches_a_tamper_before_any_checkpoint_exists(folder, log):
     """A non-tail tamper is caught on the very next append even with zero checkpoints
     written yet (the window reaches genesis when the log is still this short)."""
-    for number in range(3):  # checkpoint_every=4: no checkpoint written yet
+    for number in range(3):  # checkpoint_every=4: only entry 1 is signed so far
         add(log, f"r{number}")
     _tamper_request_id(folder, "r1", "zz1")
     with pytest.raises(AuditIntegrityError):
@@ -434,3 +435,38 @@ def test_concurrent_processes_keep_one_chain(folder, log):
     assert [e["seq"] for e in entries] == list(range(1, 121))
     assert len({e["request_id"] for e in entries}) == 120
     assert log.verify().ok
+
+
+def _clock(times):
+    values = iter(times)
+    return lambda: next(values)
+
+
+def _checkpoint_seqs(folder):
+    return [json.loads(line)["seq"] for line in (folder / "checkpoints.jsonl").read_text().splitlines()]
+
+
+def test_the_first_entry_is_signed_so_a_small_log_is_never_unsigned(folder):
+    log = AuditLog(folder, load_or_create_signer(folder), checkpoint_every=16)
+    add(log, "r0")
+    assert _checkpoint_seqs(folder) == [1]
+    assert verify_log(folder).covered_seq == 1
+
+
+def test_a_checkpoint_is_signed_when_the_newest_is_older_than_the_timer(folder):
+    stamps = [f"2026-11-28T10:00:{s:02d}.000Z" for s in (0, 0, 10, 20, 31, 31)]  # entry and checkpoint times
+    log = AuditLog(folder, load_or_create_signer(folder), checkpoint_every=16, checkpoint_seconds=30,
+                   clock=_clock(stamps))
+    for number in range(4):
+        add(log, f"r{number}")
+    # entry 1 (signed at :00), entries 2 and 3 within 30 s, entry 4 at :31 is signed by the timer
+    assert _checkpoint_seqs(folder) == [1, 4]
+
+
+def test_the_timer_can_be_turned_off(folder):
+    stamps = [f"2026-11-28T10:0{m}:00.000Z" for m in (0, 0, 1, 2, 3)]
+    log = AuditLog(folder, load_or_create_signer(folder), checkpoint_every=16, checkpoint_seconds=None,
+                   clock=_clock(stamps))
+    for number in range(4):
+        add(log, f"r{number}")
+    assert _checkpoint_seqs(folder) == [1]

@@ -70,6 +70,10 @@ LOCK_NAME = "audit.lock"
 CHECKPOINT_TYPE = "audit-checkpoint"
 GENESIS_HASH = hashlib.sha256(b"t4-audit-genesis-v1").hexdigest()
 DEFAULT_CHECKPOINT_EVERY = 16
+# Besides every ``checkpoint_every`` entries, a checkpoint is also signed on the very first entry
+# (so a small log is never unsigned) and on the first entry written at least this many seconds
+# after the newest checkpoint (so a slow log does not leave a long unsigned tail).
+DEFAULT_CHECKPOINT_SECONDS = 60.0
 ALERT_DECISION = "alert"
 RULE_PARTIAL_REPAIRED = "AUD-PARTIAL-RECORD-REPAIRED"
 
@@ -357,14 +361,18 @@ class AuditLog:
         signer: Signer | None,
         *,
         checkpoint_every: int = DEFAULT_CHECKPOINT_EVERY,
+        checkpoint_seconds: float | None = DEFAULT_CHECKPOINT_SECONDS,
         clock: Callable[[], str] = _utc_now,
     ) -> None:
         if checkpoint_every < 1:
             raise ValueError("checkpoint_every must be at least 1")
+        if checkpoint_seconds is not None and not checkpoint_seconds > 0:
+            raise ValueError("checkpoint_seconds must be positive or None")
         self.directory = Path(dir)
         self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.signer = signer
         self.checkpoint_every = checkpoint_every
+        self.checkpoint_seconds = checkpoint_seconds
         self._clock = clock
         self._needs_checkpoint = False
         self.log_path = self.directory / LOG_NAME
@@ -868,9 +876,26 @@ class AuditLog:
         entry = {**fields, "seq": seq + 1, "ts": self._clock(), "detail": detail}
         entry["hash"] = entry_hash(entry, head_hash)
         _append_durably(self.log_path, canonical(entry) + b"\n")
-        if self.signer is not None and entry["seq"] % self.checkpoint_every == 0:
+        if self.signer is not None and self._checkpoint_due(entry["seq"], entry["ts"]):
             self._write_checkpoint(entry["seq"], entry["hash"])
         return {"seq": entry["seq"], "hash": entry["hash"]}
+
+    def _checkpoint_due(self, seq: int, ts: str) -> bool:
+        """Sign the first entry, every ``checkpoint_every``-th entry, and the first entry written
+        ``checkpoint_seconds`` or more after the newest checkpoint."""
+        if seq == 1 or seq % self.checkpoint_every == 0:
+            return True
+        if self.checkpoint_seconds is None:
+            return False
+        newest = self._newest_checkpoint()
+        if newest is None:
+            return True  # a signed log that has no checkpoint at all (for example after a crash)
+        try:
+            elapsed = (datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                       - datetime.fromisoformat(str(newest["ts"]).replace("Z", "+00:00"))).total_seconds()
+        except (ValueError, TypeError):
+            return False
+        return elapsed >= self.checkpoint_seconds
 
     def _write_checkpoint(self, seq: int, head_hash: str) -> dict:
         assert self.signer is not None

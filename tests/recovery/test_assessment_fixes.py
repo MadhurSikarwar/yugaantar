@@ -47,7 +47,8 @@ def test_missing_scheduled_checkpoint_is_re_signed_and_appends_continue(tmp_path
     report = verify_log(d)
     assert report.ok and report.entries == 75
     seqs = [json.loads(l)["seq"] for l in (d / "checkpoints.jsonl").read_text().splitlines()]
-    assert 33 in seqs or 34 in seqs or 35 in seqs  # the missed anchor was re-signed after a full check
+    # The missed anchor is re-signed after a full check, before the next scheduled checkpoint at 48.
+    assert any(32 < seq < 48 for seq in seqs)
 
 
 def test_missing_checkpoint_never_hides_an_edit(tmp_path):

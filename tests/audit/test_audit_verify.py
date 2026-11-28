@@ -61,7 +61,7 @@ def folder(tmp_path):
 
 def test_clean_log_verifies(folder):
     report = verify_log(folder)
-    assert report.ok and report.entries == 10 and report.checkpoints == 2 and report.covered_seq == 8
+    assert report.ok and report.entries == 10 and report.checkpoints == 3 and report.covered_seq == 8  # entries 1, 4, 8
     assert report.first_bad_seq is None
     assert any("2 newest entries" in warning for warning in report.warnings)
 
