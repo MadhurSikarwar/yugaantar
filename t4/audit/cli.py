@@ -69,6 +69,9 @@ def _parser() -> argparse.ArgumentParser:
     explain.add_argument("--challenge", help="SHA-256 (hex) of a protected_read challenge")
     explain.add_argument("--archive", help="also search the archived segments in this folder")
     commands.add_parser("alerts", help="list alerts")
+    seal = commands.add_parser("seal", help="sign an unsigned tail once the newest checkpoint is older than --max-age")
+    seal.add_argument("--max-age", type=float, default=60.0, help="seconds (default 60)")
+    seal.add_argument("--watch", action="store_true", help="keep running; sign the tail again on exit")
     archive = commands.add_parser("archive", help="move the finished segment to an archive folder; the log continues")
     archive.add_argument("--to", required=True, help="archive folder, outside the log folder")
     return parser
@@ -185,6 +188,14 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if report.ok else 1
         if args.command == "pin":
             return _pin(args)
+        if args.command == "seal":
+            from t4.audit.sealer import seal_if_due, watch
+
+            if args.watch:
+                _emit({"checkpoints_written": watch(args.dir, args.max_age)})
+            else:
+                _emit({"checkpoint": seal_if_due(args.dir, args.max_age)})
+            return 0
         if args.command == "archive":
             from t4.audit.archive import archive
 
