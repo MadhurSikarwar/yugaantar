@@ -1,6 +1,7 @@
-# Linux and Windows test runs. NOT RUN YET: this file was written but GitHub has not executed it.
-# Tests that need the official toolkit or POSIX permission bits skip themselves where those are absent;
-# scripts/check_all.py (validator, scans) is the fuller local check and needs the toolkit as a sibling folder.
+# Linux and Windows test runs, plus the official validator and the frontend checks.
+# Tests that need POSIX permission bits skip themselves on Windows. The official toolkit is
+# checked out next to the repository at the commit the adapter was built against, so the
+# toolkit-dependent tests and scripts/check_all.py (layout, scans, validator) run here too.
 name: tests
 on: [push, pull_request]
 jobs:
@@ -10,13 +11,44 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      TRACK4_TOOLKIT: ${{ github.workspace }}/../Track-4-Toolkit
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # the secret scan in check_all.py reads the whole history
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Official toolkit, pinned, next to the repository
+        shell: bash
+        run: |
+          git clone https://github.com/ScalerOpenSourceLabs/Track-4-Toolkit.git ../Track-4-Toolkit
+          git -C ../Track-4-Toolkit checkout 8901dfb
       - run: python -m pip install -r requirements-demo.txt -r requirements-dev.txt  # demo-only package lets the messaging tests run
       - run: python scripts/verify_dependencies.py
       - run: python -m pytest -rs
       - run: python tools/selfattack.py
       - run: python scripts/e2e_checks.py
+      - name: Official validator
+        run: python ../Track-4-Toolkit/validate.py --entry ./track4_service.py
+      - name: Layout, scans and validator (tests already ran above)
+        run: python scripts/check_all.py --toolkit ../Track-4-Toolkit --skip-tests
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      - run: npm run build
+      - run: npx prettier --check src index.html
