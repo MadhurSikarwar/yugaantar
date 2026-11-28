@@ -34,7 +34,8 @@ def test_the_tool_leaves_only_the_current_user_and_system(tmp_path):
     (folder / "later.txt").write_text("y")  # new files inherit the private rules
     for path in (folder, folder / "state.key", folder / "later.txt"):
         names = _principals(path)
-        expected = {"nt authority\system", f"{os.environ['USERDOMAIN']}\{os.environ['USERNAME']}".lower()}
+        user = "\\".join((os.environ["USERDOMAIN"], os.environ["USERNAME"])).lower()
+        expected = {"nt authority\\system", user}
         assert names == expected
     assert (folder / "state.key").read_text() == "x"  # and the owner can still read it
 
