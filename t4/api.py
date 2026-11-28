@@ -264,7 +264,8 @@ class BackupVaultApi(Protocol):
     """
 
     @classmethod
-    def create(cls, key_dir: str | Path, backup_dir: str | Path, subject: str) -> "BackupVaultApi": ...
+    def create(cls, key_dir: str | Path, backup_dir: str | Path, subject: str, *,
+               encrypt: bool = False) -> "BackupVaultApi": ...
 
     def location(self) -> dict[str, str]: ...
 
