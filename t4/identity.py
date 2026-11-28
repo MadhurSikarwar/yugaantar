@@ -13,6 +13,8 @@ Documents (names are fixed; see ``t4.store``)
                "revoked": {identifier_key(actor): epoch_when_revoked}}
     requests  {identifier_key(request_id): {"decision", "rule", "seq", "n"}}
     guard     counters owned by ``t4.guard`` (keyed by ``identifier_key``)
+    challenges {sha256(challenge): n}  protected_read challenges already answered in this
+              generation; kept only when TRACK4_CHALLENGE_POLICY=once (bounded)
     pending   {"audit": [...]} administrative audit entries that are already in force
               (a revocation) but could not be written to the audit log yet. They are
               written, exactly once, by the next request that can reach the log.
@@ -46,6 +48,9 @@ MAX_INDEX_ENTRIES = 10_000
 # undone or refused because of this bound: past it, further entries are only counted
 # (``pending_dropped``) and reported as degraded logging, so the gap stays visible.
 MAX_PENDING_AUDIT = MAX_INDEX_ENTRIES
+# Answered protected_read challenges remembered per generation. The oldest is forgotten first, so a
+# challenge older than the newest 10,000 can be answered again (documented limit).
+MAX_CHALLENGES = MAX_INDEX_ENTRIES
 
 
 def identifier_key(identifier: str) -> str:
@@ -75,6 +80,7 @@ class VaultState:
     guard: dict = field(default_factory=dict)
     pending_audit: list = field(default_factory=list)
     pending_dropped: int = 0
+    challenges: dict[str, int] = field(default_factory=dict)
 
     # -- persistence ------------------------------------------------------
 
@@ -94,6 +100,7 @@ class VaultState:
             guard=txn.get("guard") or {},
             pending_audit=list((txn.get("pending") or {}).get("audit", [])),
             pending_dropped=int((txn.get("pending") or {}).get("dropped", 0)),
+            challenges=dict((txn.get("challenges") or {}).get("seen", {})),
         )
 
     def save(self, txn: Txn) -> None:
@@ -104,6 +111,7 @@ class VaultState:
         txn.put("requests", self.requests)
         txn.put("guard", self.guard)
         txn.put("pending", {"audit": self.pending_audit, "dropped": self.pending_dropped})
+        txn.put("challenges", {"seen": self.challenges})
 
     @property
     def is_provisioned(self) -> bool:
@@ -139,6 +147,7 @@ class VaultState:
         self.revoked = {}
         self.requests = {}
         self.guard = {}
+        self.challenges = {}
 
     def revoke(self, actor: str) -> bool:
         """Revoke ``actor``. Returns True if this is a new revocation (epoch bumped)."""
@@ -155,6 +164,16 @@ class VaultState:
             self.pending_dropped += 1
             return
         self.pending_audit.append(entry)
+
+    def challenge_seen(self, challenge_sha256: str) -> bool:
+        return challenge_sha256 in self.challenges
+
+    def remember_challenge(self, challenge_sha256: str) -> None:
+        """Remember an answered challenge (bounded: the oldest is forgotten first)."""
+        self.challenges[challenge_sha256] = self.next_n
+        self.next_n += 1
+        while len(self.challenges) > MAX_CHALLENGES:
+            del self.challenges[min(self.challenges, key=self.challenges.__getitem__)]
 
     def first_record(self, request_id: str) -> dict | None:
         record = self.requests.get(identifier_key(request_id))

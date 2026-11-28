@@ -413,3 +413,32 @@ def test_official_validator_passes():
         [sys.executable, str(toolkit / "validate.py"), "--entry", str(ENTRY)], capture_output=True, text=True, timeout=300
     )
     assert done.returncode == 0, done.stdout + done.stderr
+
+
+# --- reused protected_read challenge (opt-in: TRACK4_CHALLENGE_POLICY=once) ------------------------
+
+
+def _protected(adapter: Adapter, actor: str, challenge: str) -> dict:
+    public_key, _secret = ml_kem_768.generate_keypair()
+    return adapter.call(op="protected_read", actor=actor, asset="brief", challenge=challenge,
+                        public_key=base64.b64encode(public_key).decode("ascii"))
+
+
+def test_by_default_every_authorized_protected_read_is_answered(adapter):
+    provision(adapter)
+    assert "proof" in _protected(adapter, "maya", "same")
+    assert "proof" in _protected(adapter, "maya", "same")
+
+
+def test_challenge_policy_once_refuses_a_reused_challenge(adapter):
+    adapter.env["TRACK4_CHALLENGE_POLICY"] = "once"
+    provision(adapter)
+    assert _protected(adapter, "ravi", "c1") == {"decision": "deny"}  # a denied caller burns nothing
+    assert "proof" in _protected(adapter, "maya", "c1")
+    assert _protected(adapter, "maya", "c1") == {"decision": "deny"}
+    assert "proof" in _protected(adapter, "maya", "c2")
+    from t4.audit.log import AuditLog
+    rules = [e["rule"] for e in AuditLog(adapter.state_dir / "audit", None).entries()]
+    assert "CRY-CHALLENGE-REUSED" in rules
+    provision(adapter)  # a new generation starts with no answered challenges
+    assert "proof" in _protected(adapter, "maya", "c1")

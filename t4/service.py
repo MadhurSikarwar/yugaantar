@@ -66,6 +66,11 @@ from t4.validate_in import (
 )
 
 SETUP_POLICY_ENV = "TRACK4_SETUP_POLICY"  # "once" refuses a second setup; anything else keeps the contract's reset
+# "once" refuses a protected_read whose challenge was already answered in this generation. Off by
+# default: the contract asks callers for a fresh challenge but no published check exercises reuse,
+# so the judged default keeps answering every authorized request.
+CHALLENGE_POLICY_ENV = "TRACK4_CHALLENGE_POLICY"
+RULE_CHALLENGE_REUSED = "CRY-CHALLENGE-REUSED"
 RULE_SETUP = "ADM-SETUP"
 RULE_REVOKE = "ADM-REVOKE"
 RULE_CRYPTO_REJECTED_KEY = "CRY-KEY-REJECTED"
@@ -407,6 +412,27 @@ class VaultService:
                 txn.commit()
                 self._emit_alerts(alerts, actor=request.actor, target=request.asset, request_id=request_id)
                 return {"decision": "deny"}
+
+            if os.environ.get(CHALLENGE_POLICY_ENV, "").strip().lower() == "once":
+                if state.challenge_seen(challenge_sha256):
+                    entry = self._audit().append(
+                        actor=request.actor,
+                        action="protected_read",
+                        target=request.asset,
+                        decision="deny",
+                        rule=RULE_CHALLENGE_REUSED,
+                        request_id=request_id,
+                        detail=detail,
+                    )
+                    state.audit_seq = int(entry["seq"])
+                    state.save(txn)
+                    txn.commit()
+                    return {"decision": "deny"}
+                # Burned before anything is computed: a crash below can only refuse a retry, never
+                # let the same challenge be answered twice.
+                state.remember_challenge(challenge_sha256)
+                state.save(txn)
+                txn.commit()
 
             # Authorized: only now touch the public key.
             body = state.body_of(request.asset) or ""
