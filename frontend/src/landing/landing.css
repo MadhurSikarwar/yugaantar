@@ -635,13 +635,13 @@
   border-color: var(--lamp-off);
   color: var(--fg);
 }
-.checks {
+.ledger .checks {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
   margin-top: 32px;
 }
-.check {
+.ledger .check {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -651,20 +651,20 @@
   padding: 16px 20px;
   background: var(--bezel-2);
 }
-.check strong {
+.ledger .check strong {
   padding: 2px 12px;
   font-size: 26px;
   font-stretch: 75%;
   color: var(--fg);
 }
-.check code {
+.ledger .check code {
   width: 100%;
   color: var(--bezel-dim);
 }
-.check.pass strong {
+.ledger .check.pass strong {
   background: var(--lamp-green);
 }
-.check.fail strong {
+.ledger .check.fail strong {
   background: var(--lamp-red);
 }
 .ledger-verdict {
@@ -922,7 +922,7 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .panel-lower,
-  .checks,
+  .ledger .checks,
   .replies {
     grid-template-columns: minmax(0, 1fr);
   }

@@ -66,7 +66,19 @@ python tools/bridge.py        # open http://127.0.0.1:8765/#/console and choose 
 
 Checks, from `frontend/`: `npm run check`, `npm test`, `npm run build`. For development use `npm run dev` together with `python tools/bridge.py --no-start` (Vite forwards `/api` to the bridge).
 
-The bridge serves the built console and runs the real backend on synthetic data in a temporary folder: adapter calls start `track4_service.py` as a new process, signed node requests, rotation and revocation use `t4.node` on a simulated clock, and the audit logs are checked by `t4.audit.verify`. The browser runs no cryptography. The bridge is **not an authentication layer**: anyone who can reach its port can act as any actor. It listens on 127.0.0.1 only; run it on a developer machine, never on a shared host.
+The bridge serves the built console and runs the real backend on synthetic data in a temporary folder: adapter calls start `track4_service.py` as a new process, signed node requests, rotation and revocation use `t4.node` on a simulated clock, and the audit logs are checked by `t4.audit.verify`. The browser runs no cryptography.
+
+From the console's **Backend controls** you can reach every backend feature:
+
+| Area | Controls |
+|---|---|
+| Adapter | `read`, `protected_read` (the proof is checked like an independent client), `revoke`, `audit`, `setup` again (optionally disabling an actor) |
+| Node layer | Signed requests (optionally altered after signing), device revocation, key rotation, enrolment, list delivery, taking a node offline, moving the clock |
+| Authority | Grants with or without an approval, grant removal, revoking an actor on every device, backup and restore through the vault |
+| Messages | The optional demo layer: an encrypted, signed message, then the same message replayed |
+| Operator | Explain a request ID from every log, list alerts, pin every log, verify against the pins, run the detector on our own verified logs, health (`t4.consistency`, `t4.storage_status`), and editing a synthetic log on disk to show the edit being caught |
+
+Pins made in the console are kept in the bridge's memory, outside the log folders, and are lost when the bridge stops. The optional encrypted-messaging demo (`demo/messaging.py`) is there too: send a message, then see its replay refused (needs `requirements-demo.txt`). The bridge is **not an authentication layer**: anyone who can reach its port can act as any actor. It listens on 127.0.0.1 only; run it on a developer machine, never on a shared host.
 
 Without a backend the console loads nothing by default. You can load a clearly labelled synthetic sample or import a JSON snapshot. Imported results are shown as reported claims; importing verifies nothing. Files stay in browser memory (limit 5 MB and 5,000 entries per collection). Do not import secrets.
 
