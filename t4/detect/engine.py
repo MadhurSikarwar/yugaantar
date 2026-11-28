@@ -326,6 +326,9 @@ def analyze(events: Iterable[Event], approvals: Mapping[str, Approval],
             "Candidate sequence only: this does not establish compromise.",
             cfg, evidence=needed))
 
+    if cfg.cross_session_movement:
+        lone = _cross_session(lone, cfg, put, alerts)
+
     for event in lone:
         if event.outcome in cfg.deny_outcomes:
             put(event, "isolated_denial", "DET-ISOLATED-DENIAL",
@@ -388,6 +391,36 @@ def analyze(events: Iterable[Event], approvals: Mapping[str, Approval],
 
     alerts.sort(key=lambda a: (a.emitted_at, a.alert_id))
     return Result(events=events, labels=labels, alerts=alerts, order_uncertain=uncertain)
+
+
+def _cross_session(lone: list[Event], cfg: DetectConfig, put, alerts: list) -> list[Event]:
+    """Second pass over edges no per-session chain explained: group by actor only (session churn)."""
+    from dataclasses import replace as _replace
+
+    by_actor = _replace(cfg, movement_group_by=("actor",), movement_flow_window_s=0)
+    candidates = [e for e in lone if e.actor not in cfg.unattributed_actors]
+    used: set[str] = set()
+    for chain in rules.movement_chains(candidates, by_actor):
+        services = {e.target_service for e in chain}
+        sessions = {e.session_id for e in chain}
+        if len(services) < cfg.movement_min_services or len(sessions) < 2:
+            continue
+        found = rules.movement_detection(chain, by_actor)
+        trigger, needed = found if found else (max(chain, key=lambda e: e.receipt_index), list(chain))
+        path = ", ".join(f"{e.source_service}->{e.target_service} ({e.outcome}, {e.session_id}, {e.event_id})"
+                         for e in chain)
+        for event in chain:
+            used.add(event.event_id)
+            put(event, "lateral_movement_candidate", "DET-CROSS-SESSION-MOVEMENT",
+                f"edge {event.source_service}->{event.target_service} is outside the expected scope of "
+                f"{event.role_before}; part of a {len(chain)}-event chain across {len(sessions)} sessions")
+        alerts.append(_alert(
+            "DET-CROSS-SESSION-MOVEMENT", "medium", trigger, chain,
+            f"{chain[0].actor} touched {len(services)} services outside its expected scope within "
+            f"{cfg.movement_window_s:g} s steps, changing session between steps ({len(sessions)} sessions): "
+            f"{path}. Candidate sequence only: the sessions may belong to different clients of one identity.",
+            cfg, evidence=needed))
+    return [e for e in lone if e.event_id not in used]
 
 
 def run(events: Iterable[Event], approvals: Mapping[str, Approval],

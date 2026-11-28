@@ -43,6 +43,12 @@ class DetectConfig:
     # chain up to this far apart, so waiting longer than W between steps does not hide a flow.
     # 0 turns this off (W alone decides).
     movement_flow_window_s: float = 600.0
+    # Session churn: unexpected edges left over by the per-session pass are grouped again by actor
+    # alone (same W). A chain that spans at least two sessions and reaches the minimum number of
+    # services raises DET-CROSS-SESSION-MOVEMENT (medium). Placeholder identities for requests whose
+    # signature was not verified are never grouped, so nobody is blamed for an unproven claim.
+    cross_session_movement: bool = True
+    unattributed_actors: frozenset[str] = frozenset({"(unverified)", "unknown", ""})
     # Events are grouped by these Event attributes for movement chains.
     movement_group_by: tuple[str, ...] = ("actor", "session_id")
 

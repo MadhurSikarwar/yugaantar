@@ -176,8 +176,10 @@ def test_same_service_twice_is_not_movement():
     assert set(pred.values()) == {"isolated_denial"}
 
 
-def test_different_sessions_are_not_chained():
-    pred, _ = labels(events(_edge("e1", 0, "billing", session="s1"), _edge("e2", 5, "archive", session="s2")))
+def test_the_per_session_pass_does_not_chain_different_sessions():
+    # The cross-session pass (tests below) handles session churn; this checks the per-session rule alone.
+    cfg = replace(DEFAULT_CONFIG, cross_session_movement=False)
+    pred, _ = labels(events(_edge("e1", 0, "billing", session="s1"), _edge("e2", 5, "archive", session="s2")), cfg=cfg)
     assert set(pred.values()) == {"isolated_denial"}
 
 
@@ -276,3 +278,31 @@ def test_hostile_identifiers_stay_opaque():
     pred, alerts = labels(events(_edge("e1", 0, "billing", actor=actor), _edge("e2", 1, "archive", actor=actor)))
     assert alerts[0].identity == actor
     assert set(pred) == {"e1", "e2"}
+
+
+# -- session churn: a new session on every step ------------------------------------------------------
+
+
+def test_session_churn_is_still_movement():
+    pred, alerts = labels(events(_edge("e1", 0, "billing", session="s1"), _edge("e2", 20, "archive", session="s2")))
+    assert pred == {"e1": "lateral_movement_candidate", "e2": "lateral_movement_candidate"}
+    assert [a.rule for a in alerts] == ["DET-CROSS-SESSION-MOVEMENT"] and alerts[0].severity == "medium"
+
+
+def test_churn_steps_far_apart_or_at_one_service_are_not_chained():
+    pred, alerts = labels(events(_edge("e1", 0, "billing", session="s1"), _edge("e2", 120, "archive", session="s2")))
+    assert set(pred.values()) == {"isolated_denial"} and alerts == []
+    pred, alerts = labels(events(_edge("e1", 0, "billing", session="s1"), _edge("e2", 10, "billing", session="s2")))
+    assert set(pred.values()) == {"isolated_denial"} and alerts == []
+
+
+def test_unverified_claims_are_never_grouped_across_sessions():
+    pred, alerts = labels(events(_edge("e1", 0, "billing", session="s1", actor="(unverified)"),
+                                 _edge("e2", 10, "archive", session="s2", actor="(unverified)")))
+    assert set(pred.values()) == {"isolated_denial"} and alerts == []
+
+
+def test_the_cross_session_rule_can_be_turned_off():
+    cfg = replace(DEFAULT_CONFIG, cross_session_movement=False)
+    pred, _ = labels(events(_edge("e1", 0, "billing", session="s1"), _edge("e2", 20, "archive", session="s2")), cfg=cfg)
+    assert set(pred.values()) == {"isolated_denial"}
