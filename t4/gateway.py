@@ -45,11 +45,16 @@ RECORD = "gateway"
 REQUEST_TYPE = "gateway-request"
 REQUEST_FIELDS = frozenset({"type", "caller", "op", "body", "nonce", "issued_at"})
 DECISION_TYPE = "review-decision"
+AUTHORITY_OPS = frozenset({"grant", "ungrant", "revoke_device", "revoke_actor", "revoke_key", "enroll",
+                           "backup", "restore"})
 ROLES = {
     "user": frozenset({"read", "protected_read", "audit"}),
-    "admin": frozenset({"setup", "revoke", "audit"}),
+    # Adapter administration and every authority command go through the same signed checks.
+    "admin": frozenset({"setup", "revoke", "audit"}) | AUTHORITY_OPS,
     "reviewer": frozenset({"decide"}),
 }
+RATE_LIMIT = 60  # requests per caller per RATE_WINDOW seconds; above it: GW-RATE-LIMITED
+RATE_WINDOW = 60.0
 ACTOR_BOUND_OPS = frozenset({"read", "protected_read"})
 VERDICTS = frozenset({"approve", "reject"})
 MAX_NONCES = 50_000
@@ -73,6 +78,34 @@ class Gateway:
         return cls(directory, signer, log)
 
     # -- enrolment ------------------------------------------------------------
+
+    def revoke_caller(self, caller: str) -> None:
+        """Refuse every later request from this caller (logged; cannot be undone, enroll a new name)."""
+        with self.store.locked() as txn:
+            record = require_record(txn.get(RECORD), "gateway")
+            entry = record["callers"].get(caller)
+            if entry is None:
+                raise NodeError("unknown caller")
+            entry["revoked"] = True
+            self.log.append(actor="gateway", action="revoke_caller", target=caller, decision="allow",
+                            rule="GW-REVOKE-CALLER", request_id=f"revoke-{hashlib.sha256(caller.encode()).hexdigest()[:32]}",
+                            detail={})
+            txn.put(RECORD, record)
+
+    def rotate_caller(self, caller: str, public_key: bytes) -> None:
+        """Replace a caller's key: requests signed with the old key are refused from now on."""
+        with self.store.locked() as txn:
+            record = require_record(txn.get(RECORD), "gateway")
+            entry = record["callers"].get(caller)
+            if entry is None or entry.get("revoked"):
+                raise NodeError("unknown or revoked caller")
+            if any(other["public_key"] == b64e(public_key) for other in record["callers"].values()):
+                raise NodeError("public key already used")
+            entry["public_key"] = b64e(public_key)
+            self.log.append(actor="gateway", action="rotate_caller", target=caller, decision="allow",
+                            rule="GW-ROTATE-CALLER", request_id=f"rotate-{hashlib.sha256(public_key).hexdigest()[:32]}",
+                            detail={})
+            txn.put(RECORD, record)
 
     def enroll(self, caller: str, role: str, public_key: bytes, *, actor: str | None = None) -> None:
         """Register a caller's public key and role. A user is bound to exactly one actor."""
@@ -136,6 +169,8 @@ class Gateway:
         caller = record["callers"].get(body["caller"])
         if caller is None:
             return "GW-UNKNOWN-CALLER", body, signature
+        if caller.get("revoked"):
+            return "GW-CALLER-REVOKED", body, signature
         if self.signer.verify(b64d(caller["public_key"]), canonical(body), signature) is not True:
             return "GW-BAD-SIGNATURE", body, signature
         if not -record["s"] <= now - body["issued_at"] <= record["W"]:
@@ -147,6 +182,12 @@ class Gateway:
         if len(record["nonces"]) >= MAX_NONCES:
             return "GW-BUSY", body, signature  # fail closed: forgetting a nonce would allow a replay
         record["nonces"][nonce] = body["issued_at"] + record["W"] + record["s"]
+        # Rate limit per caller (verified callers only, so nobody can exhaust another's budget).
+        recent = [t for t in record.setdefault("rates", {}).get(body["caller"], []) if now - t < RATE_WINDOW]
+        if len(recent) >= RATE_LIMIT:
+            record["rates"][body["caller"]] = recent
+            return "GW-RATE-LIMITED", body, signature
+        record["rates"][body["caller"]] = recent + [now]
         if body["op"] not in ROLES[caller["role"]]:
             return "GW-NOT-PERMITTED", body, signature
         if body["op"] in ACTOR_BOUND_OPS and body["body"].get("actor") != caller["actor"]:

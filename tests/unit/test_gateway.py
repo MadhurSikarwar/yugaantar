@@ -89,3 +89,22 @@ def test_enrolment_refuses_duplicates_and_unbound_users(world):
         world["gateway"].enroll("someone", "user", pk)
     with pytest.raises(NodeError):
         world["gateway"].enroll("x", "superuser", pk)
+
+
+def test_a_rotated_caller_key_replaces_the_old_one(world):
+    new_pk, new_sk = world["signer"].sig_keygen()
+    world["gateway"].rotate_caller("maya-app", new_pk)
+    world["send"]("maya-app", "read", {"actor": "maya", "asset": "plan", "request_id": "r1"}, nonce="old")
+    assert rules(world)[-1] == "GW-BAD-SIGNATURE"
+    reply, _ = world["send"]("maya-app", "read", {"actor": "maya", "asset": "plan", "request_id": "r2"},
+                             nonce="new", key=new_sk)
+    assert reply == {"forwarded": "read"}
+
+
+def test_callers_are_rate_limited(world):
+    from t4.gateway import RATE_LIMIT
+
+    for n in range(RATE_LIMIT):
+        world["send"]("maya-app", "read", {"actor": "maya", "asset": "plan", "request_id": f"r{n}"}, nonce=f"n{n}")
+    world["send"]("maya-app", "read", {"actor": "maya", "asset": "plan", "request_id": "over"}, nonce="over")
+    assert rules(world)[-1] == "GW-RATE-LIMITED"

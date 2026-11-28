@@ -76,6 +76,8 @@ CONTENTS = {"plan": "synthetic plan", "budget": "synthetic budget", "notes": "sy
 DEVICES = (("maya-phone", "maya"), ("noor-tablet", "noor"), ("eve-laptop", "eve"))
 NODES = ("node-a", "node-b", "node-c")
 APPROVER = "ops-lead"
+# In gateway-only mode the console may still read and check; it may not change anything directly.
+READ_ONLY_ACTIONS = frozenset({"explain", "alerts", "verify", "health", "pin"})
 # Gateway callers the bridge plays (it holds their keys, as their client apps would).
 GATEWAY_CALLERS = (("maya-app", "user", "maya"), ("noor-app", "user", "noor"),
                    ("ops-console", "admin", None), ("reviewer-ana", "reviewer", None))
@@ -110,7 +112,13 @@ class Workspace:
     """One synthetic world: an adapter state folder, an authority, three nodes and some devices."""
 
     def __init__(self, base: Path | None = None, freshness: float = 60.0, skew: float = 2.0,
-                 pins_root: Path | None = None) -> None:
+                 pins_root: Path | None = None, *, gateway_only: bool = False,
+                 callers: list[tuple[str, str, str | None, bytes]] | None = None) -> None:
+        # gateway_only: every change must arrive as a request signed by an enrolled caller
+        # (POST /api/gateway); the direct adapter and authority routes are closed.
+        self.gateway_only = gateway_only
+        # Callers enrolled from the command line with THEIR OWN public keys (they keep the secret).
+        self.external_callers = list(callers or [])
         self._own_base = base is None
         # Pins outlive the workspace: closing or restarting the bridge never erases them.
         self.pins_root = Path(pins_root) if pins_root is not None else default_pins_root()
@@ -205,6 +213,8 @@ class Workspace:
                 public_key, secret_key = self.signer.sig_keygen()
                 self.gateway.enroll(caller, role, public_key, actor=actor)
                 self.gateway_keys[caller] = (public_key, secret_key)
+            for caller, role, actor, public_key in self.external_callers:
+                self.gateway.enroll(caller, role, public_key, actor=actor)  # the bridge holds no secret
             reply = self.adapter({"op": "setup", "owners": OWNERS, "contents": CONTENTS, "disabled": [],
                                   "key_material": secrets.token_hex(16)})
             if reply != {"ready": True}:
@@ -248,6 +258,8 @@ class Workspace:
             raise BridgeError("adapter_bad_reply", 502) from None
 
     def call_adapter(self, request: dict) -> dict:
+        if self.gateway_only:
+            raise BridgeError("gateway_only_mode_send_a_signed_request", 403)
         with self.lock:
             self.need_started()
             return self.adapter(request)
@@ -270,6 +282,8 @@ class Workspace:
         }
         if name not in handlers:
             raise BridgeError("unknown_action")
+        if self.gateway_only and name not in READ_ONLY_ACTIONS:
+            raise BridgeError("gateway_only_mode_send_a_signed_request", 403)
         with self.lock:
             self.need_started()
             try:
@@ -698,6 +712,34 @@ class Workspace:
         rule = AuditLog(self.base / "logs" / "gateway", None).entries()[-1]["rule"]
         return reply, rule
 
+    def gateway_dispatch(self, request: dict) -> dict:
+        """What a verified gateway request may reach: the adapter, or one authority command."""
+        op = request.get("op")
+        if op in ADAPTER_OPS:
+            return self.adapter(request)
+        authority = {"grant": self.grant, "ungrant": self.ungrant, "revoke_device": self.revoke_device,
+                     "revoke_actor": self.revoke_actor, "revoke_key": self.revoke_key, "enroll": self.enroll,
+                     "backup": self.backup, "restore": self.restore}
+        if op not in authority:
+            return {"error": "unsupported_operation"}
+        try:
+            reply = authority[op](request)
+        except BridgeError as error:
+            return {"error": error.label}
+        except Exception:  # noqa: BLE001 - node errors stay generic for a remote caller
+            return {"error": "action_failed"}
+        return {key: value for key, value in reply.items() if key in ("summary", "revoked", "enrolled")}
+
+    def submit_signed(self, body: dict) -> dict:
+        """POST /api/gateway: a request signed by an enrolled caller's own key."""
+        from t4.audit.log import AuditLog
+
+        with self.lock:
+            self.need_started()
+            reply = self.gateway.handle(body.get("signed"), self.now(), self.gateway_dispatch)
+            rule = AuditLog(self.base / "logs" / "gateway", None).entries()[-1]["rule"]
+        return {"reply": reply, "rule": rule}
+
     def gateway_request(self, body: dict) -> dict:
         """Send a signed request through the gateway as one of its enrolled callers."""
         from t4.audit.log import AuditLog
@@ -1042,6 +1084,7 @@ def make_handler(workspace: Workspace, static: Path | None, allowed_hosts: set[s
                 "/api/start": lambda: (need(), workspace.start(), {"started": True})[2],
                 "/api/adapter": lambda: workspace.call_adapter(need()),
                 "/api/action": lambda: workspace.act(need()),
+                "/api/gateway": lambda: workspace.submit_signed(need()),
             }
             if path not in routes:
                 self.send_json(404, {"error": "not_found"})
@@ -1072,8 +1115,9 @@ def make_handler(workspace: Workspace, static: Path | None, allowed_hosts: set[s
     return Handler
 
 
-def serve(port: int, static: Path | None, base: Path | None, start: bool, pins_root: Path | None = None) -> int:
-    workspace = Workspace(base, pins_root=pins_root)
+def serve(port: int, static: Path | None, base: Path | None, start: bool, pins_root: Path | None = None,
+          gateway_only: bool = False, callers: list | None = None) -> int:
+    workspace = Workspace(base, pins_root=pins_root, gateway_only=gateway_only, callers=callers)
     server = ThreadingHTTPServer(("127.0.0.1", port), make_handler(
         workspace, static, {f"127.0.0.1:{port}", f"localhost:{port}"}))
     try:
@@ -1100,11 +1144,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-start", action="store_true", help="wait for POST /api/start")
     parser.add_argument("--pins-dir", help="persistent folder for trusted pins (default: your local app-data "
                                            "folder, latticelock/pins); never inside the workspace")
+    parser.add_argument("--gateway-only", action="store_true",
+                        help="close the direct adapter and authority routes; changes only via POST /api/gateway")
+    parser.add_argument("--enroll-caller", action="append", default=[], metavar="NAME:ROLE[:ACTOR]=PUBKEY_FILE",
+                        help="enroll a caller with its own public key file (from tools/gateway_client.py keygen)")
     args = parser.parse_args(argv)
+    callers = []
+    for spec in args.enroll_caller:
+        who, _, key_file = spec.partition("=")
+        parts = who.split(":")
+        if len(parts) not in (2, 3) or not key_file:
+            parser.error(f"bad --enroll-caller {spec!r}")
+        callers.append((parts[0], parts[1], parts[2] if len(parts) == 3 else None,
+                        bytes.fromhex(json.loads(Path(key_file).read_text(encoding="ascii"))["public_key"])))
     static = Path(args.static)
     return serve(args.port, static if static.is_dir() else None,
                  Path(args.workspace) if args.workspace else None, not args.no_start,
-                 Path(args.pins_dir) if args.pins_dir else None)
+                 Path(args.pins_dir) if args.pins_dir else None, args.gateway_only, callers)
 
 
 if __name__ == "__main__":

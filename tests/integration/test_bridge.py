@@ -470,3 +470,51 @@ def test_a_device_whose_current_key_is_revoked_is_not_shown_active(ws):
     act(ws, name="revoke_key", device_id="noor-tablet")
     states = {d["id"]: d["state"] for d in ws.snapshot()["devices"]}
     assert states["noor-tablet"] == "no-usable-key" and states["maya-phone"] == "active"
+
+
+# -- an enforced gateway: callers hold their own keys; direct routes closed -------------------------
+
+
+def test_gateway_only_mode_with_a_caller_held_key(tmp_path):
+    import json as _json
+
+    from tools import gateway_client
+
+    admin_key, user_key = tmp_path / "ops.key.json", tmp_path / "maya.key.json"
+    gateway_client.keygen(admin_key)
+    gateway_client.keygen(user_key)
+    callers = [("ops", "admin", None, bytes.fromhex(_json.loads(admin_key.read_text())["public_key"])),
+               ("maya-cli", "user", "maya", bytes.fromhex(_json.loads(user_key.read_text())["public_key"]))]
+    ws = Workspace(tmp_path / "w", pins_root=tmp_path / "pins", gateway_only=True, callers=callers)
+    ws.start()
+    for closed in (lambda: ws.call_adapter({"op": "revoke", "actor": "maya"}),
+                   lambda: ws.act({"name": "revoke_device", "device_id": "maya-phone"}),
+                   lambda: ws.act({"name": "grant", "actor": "eve", "asset": "plan"})):
+        with pytest.raises(BridgeError) as error:
+            closed()
+        assert error.value.status == 403
+    assert ws.act({"name": "verify"})["rows"]
+    now = ws.now()
+
+    def send(key, caller, op, body):
+        return ws.submit_signed({"signed": gateway_client.signed_request(key, caller, op, body, now=now)})
+
+    read = send(user_key, "maya-cli", "read", {"actor": "maya", "asset": "plan", "request_id": "g1"})
+    assert read["rule"] == "GW-FORWARDED" and read["reply"]["decision"] == "allow"
+    assert send(user_key, "maya-cli", "read", {"actor": "noor", "asset": "budget", "request_id": "g2"})["rule"] == "GW-ACTOR-MISMATCH"
+    assert send(user_key, "maya-cli", "grant", {"actor": "maya", "asset": "budget"})["rule"] == "GW-NOT-PERMITTED"
+    for op, body in (("grant", {"actor": "eve", "asset": "plan", "approved": False}),
+                     ("ungrant", {"actor": "eve", "asset": "plan"}),
+                     ("revoke_key", {"device_id": "noor-tablet"}),
+                     ("backup", {}), ("restore", {}),
+                     ("enroll", {"device_id": "maya-laptop", "owner": "maya"}),
+                     ("revoke_device", {"device_id": "maya-phone"}),
+                     ("revoke_actor", {"actor": "eve"})):
+        result = send(admin_key, "ops", op, body)
+        assert result["rule"] == "GW-FORWARDED" and "error" not in result["reply"], (op, result)
+    assert send(user_key, "ops", "revoke_actor", {"actor": "noor"})["rule"] == "GW-BAD-SIGNATURE"
+    signed = gateway_client.signed_request(admin_key, "ops", "backup", {}, now=now)
+    ws.submit_signed({"signed": signed})
+    assert ws.submit_signed({"signed": signed})["rule"] == "GW-REPLAY"
+    ws.gateway.revoke_caller("maya-cli")
+    assert send(user_key, "maya-cli", "read", {"actor": "maya", "asset": "plan", "request_id": "g3"})["rule"] == "GW-CALLER-REVOKED"
