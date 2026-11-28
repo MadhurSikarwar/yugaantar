@@ -252,3 +252,41 @@ def test_a_revocation_interrupted_and_retried_is_logged_once(tmp_path, what):
     revoke(1010.0)
     logged = [e for e in real.entries() if e["rule"].startswith("KEY-REVOKE")]
     assert len(logged) == 1
+
+
+# -- encrypted backups (optional; needs the demo-only 'cryptography' package) ----------------------
+
+
+def test_an_encrypted_backup_hides_private_keys_and_restores(tmp_path):
+    pytest.importorskip("cryptography")
+    from t4.backup import Vault
+    from t4.node.authority import Authority
+    from t4.node.common import load_signer, open_log
+
+    vault = Vault.create(tmp_path / "vault-key", tmp_path / "backups", "authority", encrypt=True)
+    authority = Authority.create(tmp_path / "authority", load_signer(), open_log(tmp_path / "log"),
+                                 vault=vault.location())
+    secret = authority._record()["sk"]
+    vault.backup(authority.store, "authority", 1000.0)
+    (stored,) = list((tmp_path / "backups").iterdir())
+    data = stored.read_bytes()
+    assert secret.encode() not in data and b'"chacha20-poly1305"' in data
+    report = vault.restore(tmp_path / "restored", "authority")
+    assert report.used_id == 1
+    restored = Authority(tmp_path / "restored", load_signer(), open_log(tmp_path / "log2"))
+    assert restored._record()["sk"] == secret
+
+
+def test_an_encrypted_backup_cannot_be_restored_without_its_key_or_after_an_edit(tmp_path):
+    pytest.importorskip("cryptography")
+    from t4.backup import BackupError, Vault
+    from t4.node.authority import Authority
+    from t4.node.common import load_signer, open_log
+
+    vault = Vault.create(tmp_path / "vault-key", tmp_path / "backups", "authority", encrypt=True)
+    authority = Authority.create(tmp_path / "authority", load_signer(), open_log(tmp_path / "log"),
+                                 vault=vault.location())
+    vault.backup(authority.store, "authority", 1000.0)
+    (tmp_path / "vault-key" / "vault.enc").write_bytes(bytes(32))  # the wrong key
+    with pytest.raises(BackupError):
+        vault.restore(tmp_path / "restored", "authority")

@@ -153,7 +153,14 @@ class Workspace:
             # The backup vault keeps its key and its backups apart from each other and from the authority.
             from t4.backup import Vault
 
-            self.vault = Vault.create(self.base / "vault-key", self.base / "vault-backups", "authority")
+            try:  # encrypted backups when the vetted cipher package is installed (requirements-demo.txt)
+                import cryptography  # noqa: F401
+
+                encrypt = True
+            except ImportError:
+                encrypt = False
+            self.vault = Vault.create(self.base / "vault-key", self.base / "vault-backups", "authority",
+                                      encrypt=encrypt)
             self.authority = Authority.create(self.base / "authority", self.signer, open_log(logs / "authority"),
                                               freshness=self.freshness, skew=self.skew,
                                               vault=self.vault.location())
@@ -600,8 +607,9 @@ class Workspace:
 
     def backup(self, body: dict) -> dict:
         number = self.vault.backup(self.authority.store, "authority", self.now())
-        return {"summary": f"Authority backed up (backup {number}). Revocations made after it are kept in the "
-                           "vault ledger, so a restore cannot undo them."}
+        how = "encrypted with ChaCha20-Poly1305" if (self.base / "vault-key" / "vault.enc").exists() else "not encrypted"
+        return {"summary": f"Authority backed up (backup {number}, {how}). Revocations made after it are kept "
+                           "in the vault ledger, so a restore cannot undo them."}
 
     def restore(self, body: dict) -> dict:
         from t4.backup import BackupError

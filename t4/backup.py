@@ -22,9 +22,15 @@ over a readable authority: without one, later revocations could be lost.
 What it defends against: damaged, edited, truncated or swapped backups, and
 rollback of revocations or rotations through restore.
 
-Limits, stated plainly: backups are authenticated but NOT encrypted (no vetted
-cipher is available to us), so they contain private keys in readable form and
-need the same protection as the live directory. Enrollments and new grants made
+Encryption (optional): a vault created with ``encrypt=True`` also encrypts every
+backup with ChaCha20-Poly1305 from the vetted ``cryptography`` package
+(``requirements-demo.txt``), under a separate random key kept in ``key_dir``, apart from
+the backups. Copying the backup folder alone then reveals no private key. The judged
+adapter never imports this module, so its runtime stays pqcrypto + standard library.
+
+Limits, stated plainly: without ``encrypt=True`` backups are authenticated but NOT
+encrypted, so they contain private keys in readable form and need the same protection
+as the live directory. Whoever holds ``key_dir`` can decrypt and forge backups. Enrollments and new grants made
 after the chosen backup are lost. The rotation protection covers the authority:
 restoring an old DEVICE backup loses that device's later private keys. What only
 a lost authority knew, from before it was linked, cannot be recovered. Restoring
@@ -94,6 +100,33 @@ def _unseal(key: bytes, label: bytes, data: bytes) -> dict:
 
 
 BACKUP_LABEL = b"t4-backup-v1\0"
+ENCRYPTION_KEY_NAME = "vault.enc"
+
+
+def _cipher(key: bytes):
+    try:
+        from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+    except ImportError:
+        raise BackupError("encrypted backups need the 'cryptography' package (requirements-demo.txt)") from None
+    return ChaCha20Poly1305(key)
+
+
+def _encrypt_record(key: bytes, backup_id: int, record: dict) -> dict:
+    nonce = secrets.token_bytes(12)
+    aad = BACKUP_LABEL + str(backup_id).encode("ascii")
+    return {"cipher": "chacha20-poly1305", "nonce": nonce.hex(),
+            "data": _cipher(key).encrypt(nonce, canonical(record), aad).hex()}
+
+
+def _decrypt_record(key: bytes, backup_id: int, sealed: dict) -> dict:
+    try:
+        aad = BACKUP_LABEL + str(backup_id).encode("ascii")
+        plain = _cipher(key).decrypt(bytes.fromhex(sealed["nonce"]), bytes.fromhex(sealed["data"]), aad)
+        return json.loads(plain)
+    except BackupError:
+        raise
+    except Exception:  # noqa: BLE001 - wrong key, edited data: one fixed answer
+        raise BackupError("cannot be decrypted") from None
 LEDGER_LABEL = b"t4-vault-ledger-v1\0"
 
 
@@ -112,9 +145,13 @@ class Vault:
         return {"key_dir": str(self.key_dir), "backup_dir": str(self.backup_dir)}
 
     @classmethod
-    def create(cls, key_dir: str | Path, backup_dir: str | Path, subject: str) -> "Vault":
-        """``subject`` names what is protected, for example ``authority``."""
+    def create(cls, key_dir: str | Path, backup_dir: str | Path, subject: str, *,
+               encrypt: bool = False) -> "Vault":
+        """``subject`` names what is protected, for example ``authority``. With ``encrypt`` every
+        backup is also encrypted (needs the ``cryptography`` package)."""
         check_text(subject)
+        if encrypt:
+            _cipher(bytes(32))  # fail now, not at the first backup, if the package is missing
         vault = cls(key_dir, backup_dir)
         vault.key_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         vault.backup_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -122,8 +159,10 @@ class Vault:
             raise BackupError("vault already exists")
         key = secrets.token_bytes(32)
         atomic_write(vault.key_dir / "vault.key", key)
+        if encrypt:
+            atomic_write(vault.key_dir / ENCRYPTION_KEY_NAME, secrets.token_bytes(32))
         atomic_write(vault.key_dir / "ledger.json", _seal(key, LEDGER_LABEL, {
-            "subject": subject, "last_backup_id": 0,
+            "subject": subject, "last_backup_id": 0, "encrypted": bool(encrypt),
             "removals": {name: {} for name in REMOVAL_SETS}, "rotations": {}}))
         return vault
 
@@ -141,6 +180,15 @@ class Vault:
             if len(key) != 32:
                 raise BackupError("vault key is damaged")
             yield key, _unseal(key, LEDGER_LABEL, data)
+
+    def _encryption_key(self) -> bytes:
+        try:
+            key = (self.key_dir / ENCRYPTION_KEY_NAME).read_bytes()
+        except OSError:
+            raise BackupError("the vault's encryption key is missing") from None
+        if len(key) != 32:
+            raise BackupError("the vault's encryption key is damaged")
+        return key
 
     def _save_ledger(self, key: bytes, ledger: dict) -> None:
         atomic_write(self.key_dir / "ledger.json", _seal(key, LEDGER_LABEL, ledger))
@@ -198,8 +246,10 @@ class Vault:
                 existing = [int(m.group(1)) for p in self.backup_dir.iterdir()
                             if (m := BACKUP_NAME.fullmatch(p.name))]
                 backup_id = max([ledger["last_backup_id"], *existing]) + 1
+                stored = (_encrypt_record(self._encryption_key(), backup_id, record)
+                          if ledger.get("encrypted") else record)
                 body = {"id": backup_id, "subject": ledger["subject"], "created_at": now,
-                        "record_name": record_name, "record": record}
+                        "record_name": record_name, "record": stored}
                 atomic_write(self.backup_dir / f"backup-{backup_id:08d}.json",
                              _seal(key, BACKUP_LABEL, body))
                 fault("backup-written")
@@ -221,6 +271,8 @@ class Vault:
                     raise BackupError("file name does not match its number")
                 if body["subject"] != subject or body["record_name"] != record_name:
                     raise BackupError("backup belongs to something else")
+                if isinstance(body["record"], dict) and body["record"].get("cipher") == "chacha20-poly1305":
+                    body = {**body, "record": _decrypt_record(self._encryption_key(), body["id"], body["record"])}
             except (OSError, BackupError, KeyError, TypeError) as error:
                 reason = str(error) if isinstance(error, BackupError) else "unreadable"
                 damaged.append(f"{path.name}: {reason}")
