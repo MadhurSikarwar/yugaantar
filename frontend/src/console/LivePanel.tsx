@@ -294,6 +294,12 @@ export default function LivePanel({ snapshot, refresh, reset }: Props) {
                 device_id: chosenDevice,
               }),
             )}
+            {button("Revoke current key version", () =>
+              action("Revoke key", {
+                name: "revoke_key",
+                device_id: chosenDevice,
+              }),
+            )}
             {button("Rotate key", () =>
               action("Rotate key", { name: "rotate", device_id: chosenDevice }),
             )}

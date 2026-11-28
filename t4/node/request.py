@@ -4,7 +4,7 @@ This is where the prototype verifies identity. Checks run in a
 fixed order and each failure has its own rule ID, written to the node's log.
 The caller only ever sees ``{"decision": "deny"}``.
 
-Order: format, fresh list, known device and key, signature, node binding, device
+Order: format, fresh list, known device and key, key version not revoked, signature, node binding, device
 and actor not revoked, actor is the device's owner, key version active now,
 time window, unused nonce, then permission.
 
@@ -71,6 +71,8 @@ def _evaluate_rule(node: Node, record: dict, body: dict, signature: bytes, messa
     claimed = next((key for key in device["keys"] if key["version"] == body["key_version"]), None)
     if claimed is None:
         return "NODE-KEY-INACTIVE", False
+    if f"{body['device_id']}/{body['key_version']}" in record.get("revoked_keys", []):
+        return "NODE-KEY-REVOKED", False
     if node.signer.verify(b64d(claimed["public_key"]), message, signature) is not True:
         return "NODE-BAD-SIGNATURE", False
     if body["node_id"] != record["node_id"]:

@@ -267,8 +267,8 @@ def _fingerprint(public_key: str) -> str:
 
 def _remember(ledger: dict, record: dict) -> None:
     """Copy an authority record's revocations and device key versions into the ledger."""
-    for name in ("revoked_devices", "revoked_actors"):
-        for item, at in record[name].items():
+    for name in ("revoked_devices", "revoked_actors", "revoked_keys"):
+        for item, at in record.get(name, {}).items():
             ledger["removals"][name].setdefault(item, at)
     rotations = ledger.setdefault("rotations", {})
     for device in record["devices"].values():
@@ -298,7 +298,9 @@ def _apply_removals(record: dict, removals: dict, backup_time: float,
                     current: dict | None) -> None:
     for name in ("revoked_devices", "revoked_actors", "revoked_keys"):
         if name not in record:
-            continue
+            if name != "revoked_keys" or not removals[name] or "devices" not in record:
+                continue
+            record[name] = {}  # an authority backed up before any key version was revoked
         merged = dict(removals[name])
         merged.update((current or {}).get(name, {}))
         for item, at in merged.items():

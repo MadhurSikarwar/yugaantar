@@ -367,3 +367,24 @@ def test_snapshot_shows_grants_and_alerts_and_pins_are_files(ws):
         assert log_dir.resolve() not in ws.pins_dir.resolve().parents and log_dir.resolve() != ws.pins_dir.resolve()
     pin = json.loads((ws.pins_dir / "node-a.json").read_text())
     assert pin["public_key"] and pin["seq"] >= 1
+
+
+def test_one_key_version_is_revoked_on_every_node_and_survives_a_restore(ws):
+    act(ws, name="backup")
+    act(ws, name="revoke_key", device_id="noor-tablet")
+    act(ws, name="restore")  # the vault ledger re-applies the key revocation
+    act(ws, name="deliver")
+    for node_id in ("node-a", "node-b"):
+        assert act(ws, name="request", device_id="noor-tablet", node_id=node_id, asset="budget")["rule"] == "NODE-KEY-REVOKED"
+    # Only that key: the device is still enrolled, and other devices are untouched.
+    assert act(ws, name="request", device_id="maya-phone", node_id="node-a", asset="plan")["decision"] == "allow"
+    assert {d["id"]: d["state"] for d in ws.snapshot()["devices"]}["noor-tablet"] == "active"
+    # Rotating to a new version restores access once the new key is active.
+    act(ws, name="rotate", device_id="noor-tablet")
+    act(ws, name="advance", seconds=70)
+    act(ws, name="deliver")
+    assert act(ws, name="request", device_id="noor-tablet", node_id="node-a", asset="budget")["decision"] == "allow"
+
+
+def test_the_console_runs_the_adapter_with_the_strict_challenge_policy(ws):
+    assert act(ws, name="protected_check", actor="maya", asset="plan")["outcome"] == "valid"

@@ -32,6 +32,7 @@ ALERT_TEXT = {
     "NODE-BAD-SIGNATURE": "A request signature did not match the enrolled device key.",
     "NODE-WRONG-NODE": "A request signed for a different node was presented here.",
     "NODE-DEVICE-REVOKED": "A revoked device tried to use this node.",
+    "NODE-KEY-REVOKED": "A request was signed with a key version the authority revoked.",
     "NODE-ACTOR-REVOKED": "A revoked actor tried to use this node.",
     "NODE-OWNER-MISMATCH": "A device tried to act as an actor who does not own it.",
     "NODE-REPLAY": "A previously used signed request was presented again.",
@@ -145,6 +146,10 @@ class Node:
                 record["list"] = body
                 for name in ("revoked_devices", "revoked_actors"):
                     record[name] = sorted(set(record[name]) | set(body[name]))
+                # Revoked key versions are remembered like revoked devices: never forgotten.
+                record["revoked_keys"] = sorted(set(record.get("revoked_keys", [])) | {
+                    f"{device_id}/{key['version']}" for device_id, device in body["devices"].items()
+                    for key in device.get("keys", []) if isinstance(key, dict) and key.get("revoked") is True})
                 txn.put(RECORD, record)
             event = {"actor": "courier", "action": "deliver_list", "target": record["node_id"],
                      "decision": "accept" if accepted else "reject", "rule": rule,

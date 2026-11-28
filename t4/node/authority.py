@@ -245,13 +245,27 @@ class Authority:
     def revoke_actor(self, actor: str, now: float) -> float:
         return self._revoke("revoked_actors", actor, now, "revoke_actor", "KEY-REVOKE-ACTOR")
 
+    def revoke_key(self, device_id: str, version: int, now: float) -> float:
+        """Revoke one key version of a device on every node; the device keeps its other keys.
+
+        Nodes refuse requests signed with that version once they hold a list naming it, and
+        never forget it. If it was the device's active key, the device signs nothing until it
+        rotates to a new version.
+        """
+        check_text(device_id)
+        check_int(version)
+        device = self._record()["devices"].get(device_id)
+        if device is None or not any(key["version"] == version for key in device["keys"]):
+            raise NodeError("unknown device or key version")
+        return self._revoke("revoked_keys", f"{device_id}/{version}", now, "revoke_key", "KEY-REVOKE-VERSION")
+
     def _revoke(self, set_name: str, item: str, now: float, action: str, rule: str) -> float:
         check_text(item)
         check_time(now)
         failure: Exception | None = None
         with self.store.locked() as txn:
             record = require_record(txn.get(RECORD), "authority")
-            at = record[set_name].get(item, max(now, record["last_issued_at"]))
+            at = record.setdefault(set_name, {}).get(item, max(now, record["last_issued_at"]))
             record[set_name][item] = at
             # The key event is queued in the same atomic write as the revocation, so the revocation
             # is in force at once and its record can never be lost: it is written below, or by the
@@ -370,8 +384,12 @@ class Authority:
             seq = max(record["list_seq"] + 1, int(now * 1000))
             issued_at = max(now, record["last_issued_at"])
             record["list_seq"], record["last_issued_at"] = seq, issued_at
+            revoked_keys = record.get("revoked_keys", {})
+            devices = {device_id: {**device, "keys": [
+                {**key, "revoked": True} if f"{device_id}/{key['version']}" in revoked_keys else key
+                for key in device["keys"]]} for device_id, device in record["devices"].items()}
             body = {"type": LIST_TYPE, "seq": seq, "issued_at": issued_at,
-                    "devices": record["devices"],
+                    "devices": devices,
                     "revoked_devices": sorted(record["revoked_devices"]),
                     "revoked_actors": sorted(record["revoked_actors"]),
                     "grants": [record["grants"][key] for key in sorted(record["grants"])]}

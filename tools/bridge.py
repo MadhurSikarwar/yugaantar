@@ -78,7 +78,7 @@ NODES = ("node-a", "node-b", "node-c")
 APPROVER = "ops-lead"
 MAX_ROWS = 200
 SIGNATURE_UNCHECKED = {"NODE-STALE-LIST", "NODE-CLOCK-ROLLBACK", "NODE-UNKNOWN-DEVICE",
-                       "NODE-KEY-INACTIVE", "NODE-BAD-SIGNATURE"}
+                       "NODE-KEY-INACTIVE", "NODE-KEY-REVOKED", "NODE-BAD-SIGNATURE"}
 
 
 class BridgeError(Exception):
@@ -183,6 +183,8 @@ class Workspace:
         env = dict(os.environ)
         for name in ("TRACK4_STATE_DIR", "TMPDIR", "TEMP", "TMP"):
             env[name] = str(self.state)
+        # The console shows the stricter setting: a protected_read challenge is answered once.
+        env["TRACK4_CHALLENGE_POLICY"] = "once"
         try:
             proc = subprocess.run([sys.executable, "-B", str(ROOT / "track4_service.py")],
                                   input=json.dumps(request).encode("utf-8"), cwd=ROOT, env=env,
@@ -214,6 +216,7 @@ class Workspace:
             "ungrant": self.ungrant, "explain": self.explain, "alerts": self.alerts,
             "pin": self.pin, "verify": self.verify, "tamper": self.tamper, "detect": self.detect,
             "health": self.health, "backup": self.backup, "restore": self.restore, "message": self.message,
+            "revoke_key": self.revoke_key,
         }
         if name not in handlers:
             raise BridgeError("unknown_action")
@@ -394,6 +397,18 @@ class Workspace:
         self.authority.grant(actor, asset, self.now(), approval_id=approval_id, granted_by=APPROVER)
         how = f"with approval {approval_id}" if approval_id else "with no approval on record"
         return {"summary": f"{actor} may now read {asset} ({how}). Deliver a list so the nodes learn it."}
+
+    def revoke_key(self, body: dict) -> dict:
+        """Revoke the key version the device signs with now (not the whole device)."""
+        device_id = body.get("device_id")
+        self._device(device_id)
+        record = self.authority._record()["devices"][device_id]
+        now = self.now()
+        usable = [key for key in record["keys"] if key["activate_at"] <= now] or record["keys"]
+        version = max(key["version"] for key in usable)
+        at = self.authority.revoke_key(device_id, version, now)
+        return {"summary": f"Key version {version} of {device_id} revoked (effective {iso(at)}). The device "
+                           "must rotate to sign again; deliver a list so the nodes learn it."}
 
     def ungrant(self, body: dict) -> dict:
         actor, asset = self._actor(body.get("actor")), self._asset(body.get("asset"))
