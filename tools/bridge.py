@@ -112,11 +112,12 @@ class Workspace:
     """One synthetic world: an adapter state folder, an authority, three nodes and some devices."""
 
     def __init__(self, base: Path | None = None, freshness: float = 60.0, skew: float = 2.0,
-                 pins_root: Path | None = None, *, gateway_only: bool = False,
+                 pins_root: Path | None = None, *, gateway_only: bool = False, secure: bool = False,
                  callers: list[tuple[str, str, str | None, bytes]] | None = None) -> None:
         # gateway_only: every change must arrive as a request signed by an enrolled caller
         # (POST /api/gateway); the direct adapter and authority routes are closed.
         self.gateway_only = gateway_only
+        self.secure = secure  # secure: encrypted backups with an OS-keystore key, or refuse to start
         # Callers enrolled from the command line with THEIR OWN public keys (they keep the secret).
         self.external_callers = list(callers or [])
         self._own_base = base is None
@@ -190,8 +191,15 @@ class Workspace:
                 encrypt = True
             except ImportError:
                 encrypt = False
+            from tools import keystore
+
+            wrap = keystore.wrap if encrypt and keystore.available() else None
+            if self.secure and (not encrypt or wrap is None):
+                # No downgrade in secure mode: plain backups or a key in a plain file are refused.
+                raise BridgeError("secure_mode_needs_the_cryptography_package_and_an_os_keystore", 500)
             self.vault = Vault.create(self.base / "vault-key", self.base / "vault-backups", "authority",
-                                      encrypt=encrypt)
+                                      encrypt=encrypt, key_wrap=wrap,
+                                      key_unwrap=keystore.unwrap if wrap else None)
             self.authority = Authority.create(self.base / "authority", self.signer, open_log(logs / "authority"),
                                               freshness=self.freshness, skew=self.skew,
                                               vault=self.vault.location())
@@ -679,7 +687,10 @@ class Workspace:
 
     def backup(self, body: dict) -> dict:
         number = self.vault.backup(self.authority.store, "authority", self.now())
-        how = "encrypted with ChaCha20-Poly1305" if (self.base / "vault-key" / "vault.enc").exists() else "not encrypted"
+        key_dir = self.base / "vault-key"
+        how = ("encrypted with ChaCha20-Poly1305, key held by the OS keystore" if (key_dir / "vault.enc.wrapped").exists()
+               else "encrypted with ChaCha20-Poly1305, key in a file" if (key_dir / "vault.enc").exists()
+               else "not encrypted")
         return {"summary": f"Authority backed up (backup {number}, {how}). Revocations made after it are kept "
                            "in the vault ledger, so a restore cannot undo them."}
 
@@ -1143,8 +1154,8 @@ def make_handler(workspace: Workspace, static: Path | None, allowed_hosts: set[s
 
 
 def serve(port: int, static: Path | None, base: Path | None, start: bool, pins_root: Path | None = None,
-          gateway_only: bool = False, callers: list | None = None) -> int:
-    workspace = Workspace(base, pins_root=pins_root, gateway_only=gateway_only, callers=callers)
+          gateway_only: bool = False, callers: list | None = None, secure: bool = False) -> int:
+    workspace = Workspace(base, pins_root=pins_root, gateway_only=gateway_only, callers=callers, secure=secure)
     server = ThreadingHTTPServer(("127.0.0.1", port), make_handler(
         workspace, static, {f"127.0.0.1:{port}", f"localhost:{port}"}))
     try:
@@ -1171,6 +1182,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-start", action="store_true", help="wait for POST /api/start")
     parser.add_argument("--pins-dir", help="persistent folder for trusted pins (default: your local app-data "
                                            "folder, latticelock/pins); never inside the workspace")
+    parser.add_argument("--secure", action="store_true",
+                        help="refuse to start unless backups are encrypted with a key held by the OS keystore")
     parser.add_argument("--gateway-only", action="store_true",
                         help="close the direct adapter and authority routes; changes only via POST /api/gateway")
     parser.add_argument("--enroll-caller", action="append", default=[], metavar="NAME:ROLE[:ACTOR]=PUBKEY_FILE",
@@ -1187,7 +1200,7 @@ def main(argv: list[str] | None = None) -> int:
     static = Path(args.static)
     return serve(args.port, static if static.is_dir() else None,
                  Path(args.workspace) if args.workspace else None, not args.no_start,
-                 Path(args.pins_dir) if args.pins_dir else None, args.gateway_only, callers)
+                 Path(args.pins_dir) if args.pins_dir else None, args.gateway_only, callers, args.secure)
 
 
 if __name__ == "__main__":

@@ -101,6 +101,8 @@ def _unseal(key: bytes, label: bytes, data: bytes) -> dict:
 
 BACKUP_LABEL = b"t4-backup-v1\0"
 ENCRYPTION_KEY_NAME = "vault.enc"
+# The same key protected by an OS keystore (see tools/keystore.py); no plain copy is written then.
+WRAPPED_KEY_NAME = "vault.enc.wrapped"
 
 
 def _cipher(key: bytes):
@@ -135,7 +137,11 @@ def _inside(path: Path, parent: Path) -> bool:
 
 
 class Vault:
-    def __init__(self, key_dir: str | Path, backup_dir: str | Path) -> None:
+    def __init__(self, key_dir: str | Path, backup_dir: str | Path, *,
+                 key_unwrap: Callable[[bytes], bytes] | None = None) -> None:
+        # key_unwrap: recovers the encryption key from an OS-keystore blob (supplied by the deployment
+        # layer, which may use native code that this module must not import).
+        self.key_unwrap = key_unwrap
         self.key_dir = Path(key_dir).resolve()
         self.backup_dir = Path(backup_dir).resolve()
         if _inside(self.key_dir, self.backup_dir) or _inside(self.backup_dir, self.key_dir):
@@ -146,13 +152,14 @@ class Vault:
 
     @classmethod
     def create(cls, key_dir: str | Path, backup_dir: str | Path, subject: str, *,
-               encrypt: bool = False) -> "Vault":
+               encrypt: bool = False, key_wrap: Callable[[bytes], bytes] | None = None,
+               key_unwrap: Callable[[bytes], bytes] | None = None) -> "Vault":
         """``subject`` names what is protected, for example ``authority``. With ``encrypt`` every
         backup is also encrypted (needs the ``cryptography`` package)."""
         check_text(subject)
         if encrypt:
             _cipher(bytes(32))  # fail now, not at the first backup, if the package is missing
-        vault = cls(key_dir, backup_dir)
+        vault = cls(key_dir, backup_dir, key_unwrap=key_unwrap)
         vault.key_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         vault.backup_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         if (vault.key_dir / "vault.key").exists():
@@ -160,7 +167,11 @@ class Vault:
         key = secrets.token_bytes(32)
         atomic_write(vault.key_dir / "vault.key", key)
         if encrypt:
-            atomic_write(vault.key_dir / ENCRYPTION_KEY_NAME, secrets.token_bytes(32))
+            fresh = secrets.token_bytes(32)
+            if key_wrap is not None:  # only the keystore-protected blob reaches the disk
+                atomic_write(vault.key_dir / WRAPPED_KEY_NAME, key_wrap(fresh))
+            else:
+                atomic_write(vault.key_dir / ENCRYPTION_KEY_NAME, fresh)
         atomic_write(vault.key_dir / "ledger.json", _seal(key, LEDGER_LABEL, {
             "subject": subject, "last_backup_id": 0, "encrypted": bool(encrypt),
             "removals": {name: {} for name in REMOVAL_SETS}, "rotations": {}}))
@@ -182,6 +193,17 @@ class Vault:
             yield key, _unseal(key, LEDGER_LABEL, data)
 
     def _encryption_key(self) -> bytes:
+        wrapped = self.key_dir / WRAPPED_KEY_NAME
+        if wrapped.exists():
+            if self.key_unwrap is None:
+                raise BackupError("the vault's key is held by an OS keystore: open the vault with its unwrap")
+            try:
+                key = self.key_unwrap(wrapped.read_bytes())
+            except Exception:  # noqa: BLE001 - wrong user, wrong machine, damaged blob: one answer
+                raise BackupError("the OS keystore did not release the vault's key") from None
+            if len(key) != 32:
+                raise BackupError("the vault's encryption key is damaged")
+            return key
         try:
             key = (self.key_dir / ENCRYPTION_KEY_NAME).read_bytes()
         except OSError:

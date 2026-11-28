@@ -290,3 +290,22 @@ def test_an_encrypted_backup_cannot_be_restored_without_its_key_or_after_an_edit
     (tmp_path / "vault-key" / "vault.enc").write_bytes(bytes(32))  # the wrong key
     with pytest.raises(BackupError):
         vault.restore(tmp_path / "restored", "authority")
+
+
+def test_a_keystore_wrapped_vault_key_is_never_written_in_plain_text(tmp_path):
+    pytest.importorskip("cryptography")
+    from tools import keystore
+
+    if not keystore.available():
+        pytest.skip("no OS keystore provider on this platform")
+    vault = Vault.create(tmp_path / "vault-key", tmp_path / "backups", "authority", encrypt=True,
+                         key_wrap=keystore.wrap, key_unwrap=keystore.unwrap)
+    authority = Authority.create(tmp_path / "authority", load_signer(), open_log(tmp_path / "log"),
+                                 vault=vault.location())
+    vault.backup(authority.store, "authority", 1000.0)
+    assert not (tmp_path / "vault-key" / "vault.enc").exists()
+    assert (tmp_path / "vault-key" / "vault.enc.wrapped").exists()
+    assert vault.restore(tmp_path / "restored", "authority").used_id == 1
+    # Without the keystore's unwrap (another program, a copied folder) the backups stay closed.
+    with pytest.raises(BackupError):
+        Vault(tmp_path / "vault-key", tmp_path / "backups").restore(tmp_path / "again", "authority")

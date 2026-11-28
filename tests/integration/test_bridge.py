@@ -524,3 +524,18 @@ def test_gateway_only_mode_with_a_caller_held_key(tmp_path):
     assert ws.submit_signed({"signed": signed})["rule"] == "GW-REPLAY"
     ws.gateway.revoke_caller("maya-cli")
     assert send(user_key, "maya-cli", "read", {"actor": "maya", "asset": "plan", "request_id": "g3"})["rule"] == "GW-CALLER-REVOKED"
+
+
+def test_secure_mode_keeps_the_backup_key_in_the_os_keystore(tmp_path):
+    pytest.importorskip("cryptography")
+    from tools import keystore
+
+    ws = Workspace(tmp_path / "w", pins_root=tmp_path / "pins", secure=True)
+    if not keystore.available():
+        with pytest.raises(BridgeError):
+            ws.start()
+        return
+    ws.start()
+    assert "OS keystore" in ws.act({"name": "backup"})["summary"]
+    assert not (ws.base / "vault-key" / "vault.enc").exists()
+    assert "restored" in ws.act({"name": "restore"})["summary"]
