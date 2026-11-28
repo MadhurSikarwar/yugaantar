@@ -169,6 +169,14 @@ class Workspace:
             if reply != {"ready": True}:
                 raise BridgeError("setup_failed", 500)
             self.deliver()
+            if os.name == "nt":
+                # Windows has no 0700: make the whole synthetic workspace private to this user.
+                from tools.windows_private import make_private
+
+                try:
+                    make_private(self.base)
+                except OSError:
+                    raise BridgeError("workspace_could_not_be_made_private", 500) from None
             self.started = True
 
     def need_started(self) -> None:

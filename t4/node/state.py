@@ -116,10 +116,15 @@ def atomic_write(path: Path, data: bytes) -> None:
 def make_private(directory: Path) -> None:
     """POSIX: tighten a directory we own to 0700 (an existing one may have been made 0755).
 
-    A directory owned by someone else is refused, not changed. On Windows, permissions are ACLs
-    inherited from the parent folder and are not changed here (see the README's limits).
+    A directory owned by someone else is refused, not changed. On Windows a symlink or junction is
+    refused; access rules are inherited from the parent and are made private by the operator tool
+    ``tools/windows_private.py`` (runtime code may not start processes; see the README).
     """
     if os.name != "posix":
+        info = os.lstat(directory)
+        junction = getattr(os.path, "isjunction", None)
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode) or (junction and junction(directory)):
+            raise IntegrityError("state path is not a real directory")
         return
     info = os.lstat(directory)
     if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):

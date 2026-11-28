@@ -158,13 +158,20 @@ def _claim_posix(path: Path, *, allow_subfolder: bool) -> Path:
     raise IntegrityError("state directory is not private")
 
 
+def _is_junction(path) -> bool:
+    """A Windows junction: a linked folder that ``os.path.islink`` does not report."""
+    check = getattr(os.path, "isjunction", None)
+    return bool(check and check(path))
+
+
 def prepare_state_dir(path: Path) -> Path:
     """Create the directory if needed and return the directory to actually use.
 
     The returned path is ``path`` itself when that is a private folder of ours (after
     tightening a loose one to 0700), or a private ``track4-state-<uid>`` subfolder
     inside it when ``path`` is shared (``/tmp``) or belongs to someone else. Callers
-    must use the returned path. On Windows only "is it a real directory" is checked.
+    must use the returned path. On Windows the path must be a real directory: not a symlink and
+    not a junction. (Making it private on Windows is ``tools/windows_private.py``; see the README.)
     """
     try:
         path.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -174,7 +181,7 @@ def prepare_state_dir(path: Path) -> Path:
         raise IntegrityError("state directory unavailable") from None
     if _IS_WINDOWS:
         info = os.lstat(path)
-        if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode):
+        if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode) or _is_junction(path):
             raise IntegrityError("state path is not a real directory")
         return path
     return _claim_posix(path, allow_subfolder=True)
